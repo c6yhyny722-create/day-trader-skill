@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 
-from _load import ROOT, load
+from _load import FIX, ROOT, load
 
 cp = load("tv-estrategia", "comprobar")
 
@@ -103,3 +103,60 @@ class Comprobar(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Plan(unittest.TestCase):
+    def test_plan_y_tamano_como_el_indicador(self):
+        with open(os.path.join(ROOT, "tv-estrategia", "reglas.example.json")) as fh:
+            reglas = json.load(fh)
+        b = barras(60, 3600, T0, 5.0)
+        datos = {"1h": b}
+        pl = cp.plan("alcista", reglas, datos, "1h", b[-1]["c"], capital=1000, riesgo_pct=1)
+        self.assertEqual(pl["direccion"], "larga")
+        self.assertAlmostEqual(pl["invalidacion"], 99.9)          # mínimo de las 10 últimas
+        self.assertAlmostEqual(pl["R"], 5.1)
+        self.assertAlmostEqual(pl["objetivo"], 105.0 + 2 * 5.1)
+        self.assertAlmostEqual(pl["zona"][0], 100.05)             # máximo de las 20 anteriores
+        self.assertAlmostEqual(pl["zona"][1], 100.05 + 0.5 * 5.1)
+        self.assertFalse(pl["en_zona"])
+        self.assertAlmostEqual(pl["perdida_en_stop"], 10.0)      # 1 % de 1000
+        self.assertIn("riesgo", pl["limite"])
+
+    def test_sin_invalidacion_no_hay_plan(self):
+        self.assertIsNone(cp.plan("alcista", {}, {"1h": barras(5, 3600, T0)}, "1h", 100.0))
+
+
+class TradingViewAYahoo(unittest.TestCase):
+    """Las velas de TradingView convertidas dan el mismo resultado en trader-entry que Yahoo."""
+
+    def test_trader_entry_igual_con_datos_convertidos(self):
+        tv = load("tv-estrategia", "tv_a_yahoo")
+        entry = load("trader-entry", "entry")
+        orig = os.path.join(FIX, "trader-entry", "TSLA-2026-10-19-5m.json")
+        with open(orig) as fh:
+            y = json.load(fh)["chart"]["result"][0]
+        q = y["indicators"]["quote"][0]
+        filas = [{"t": t, "o": q["open"][i], "h": q["high"][i], "l": q["low"][i], "c": q["close"][i],
+                  "v": q["volume"][i] or 0} for i, t in enumerate(y["timestamp"]) if q["close"][i] is not None]
+        d = tempfile.mkdtemp()
+        src = os.path.join(d, "tv.json")
+        with open(src, "w") as fh:
+            json.dump({"bars": filas}, fh)
+        out = os.path.join(d, "TSLA.json")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = tv.main([src, "--simbolo", "NASDAQ:TSLA", "--intervalo", "5m", "-o", out,
+                            "--cierre-anterior", str(y["meta"]["previousClose"]),
+                            "--hora-datos", str(y["meta"]["regularMarketTime"])])
+        self.assertEqual(code, 0)
+        now = entry.parse_now("2026-10-19 10:15")
+        a = entry.evaluate(entry.get_chart("TSLA", "5m", offline=orig), now)
+        b = entry.evaluate(entry.get_chart("TSLA", "5m", offline=out), now)
+        self.assertEqual(b["status"], "triggered")
+        self.assertEqual(entry.public(a)["trigger"], entry.public(b)["trigger"])
+        self.assertEqual(a["opening_range"], b["opening_range"])
+
+    def test_simbolos(self):
+        tv = load("tv-estrategia", "tv_a_yahoo")
+        self.assertEqual(tv.yahoo_simbolo("NYSE:BRK.B"), "BRK-B")
+        self.assertEqual(tv.yahoo_simbolo("TSLA"), "TSLA")

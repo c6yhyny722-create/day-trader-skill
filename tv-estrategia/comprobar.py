@@ -226,7 +226,38 @@ def condicion(c, datos, tf_base):
     return {"texto": texto, "pasa": bool(pasa), "a": va, "b": vb}
 
 
-def evaluar_simbolo(simbolo, reglas, datos, ahora, estado):
+def plan(nombre, reglas, datos, tf, cierre_precio, capital=None, riesgo_pct=1.0):
+    """Invalidación, R, zona de entrada, objetivo y tamaño (solo simulación)."""
+    inv = (reglas.get("invalidacion") or {}).get(nombre)
+    if not inv:
+        return None
+    stop = valor(inv, datos, tf)
+    if stop is None:
+        return {"nota": "invalidación NO EVALUABLE (%s sin dato)" % inv}
+    largo = stop < cierre_precio
+    R = abs(cierre_precio - stop)
+    if R == 0:
+        return {"nota": "invalidación igual al cierre: sin R, no hay plan"}
+    obj_r = float(reglas.get("objetivo_R", 2))
+    out = {"direccion": "larga" if largo else "corta", "referencia": cierre_precio, "invalidacion": stop,
+           "R": R, "objetivo": cierre_precio + obj_r * R if largo else cierre_precio - obj_r * R, "objetivo_R": obj_r}
+    nivel = (reglas.get("nivel") or {}).get(nombre)
+    zr = reglas.get("zona_entrada_R")
+    if nivel and zr is not None:
+        lv = valor(nivel, datos, tf)
+        if lv is not None:
+            out["zona"] = (lv, lv + float(zr) * R) if largo else (lv - float(zr) * R, lv)
+            out["en_zona"] = out["zona"][0] <= cierre_precio <= out["zona"][1]
+    if capital:
+        por_riesgo = capital * riesgo_pct / 100.0 / R
+        por_capital = capital / cierre_precio
+        out["cantidad"] = min(por_riesgo, por_capital)
+        out["limite"] = "riesgo %g %% del capital" % riesgo_pct if por_riesgo <= por_capital else "capital disponible (sin apalancamiento)"
+        out["perdida_en_stop"] = out["cantidad"] * R
+    return out
+
+
+def evaluar_simbolo(simbolo, reglas, datos, ahora, estado, capital=None, riesgo_pct=1.0):
     tf = reglas.get("temporalidad_confirmacion", "1h")
     if tf not in datos or not datos[tf]:
         return {"simbolo": simbolo, "estado": "NO EVALUABLE", "motivo": "sin velas cerradas de %s" % tf}
@@ -254,7 +285,10 @@ def evaluar_simbolo(simbolo, reglas, datos, ahora, estado):
                 hay_nueva = True
         else:
             veredicto = "SIN SEÑAL"
-        res["senales"].append({"nombre": nombre, "veredicto": veredicto, "condiciones": filas})
+        sen = {"nombre": nombre, "veredicto": veredicto, "condiciones": filas}
+        if veredicto in ("SEÑAL NUEVA", "YA NOTIFICADA"):
+            sen["plan"] = plan(nombre, reglas, datos, tf, ultima["c"], capital, riesgo_pct)
+        res["senales"].append(sen)
     res["estado"] = "SEÑAL NUEVA" if hay_nueva else (
         "YA NOTIFICADA" if any(s["veredicto"] == "YA NOTIFICADA" for s in res["senales"]) else
         "NO EVALUABLE" if res["senales"] and all(s["veredicto"] == "NO EVALUABLE" for s in res["senales"]) else
@@ -277,6 +311,19 @@ def informe(resultados):
             for f in s["condiciones"]:
                 marca = "PASA" if f["pasa"] else "NO EVALUABLE" if f["pasa"] is None else "NO PASA"
                 out.append("  - %s: %s (%s frente a %s)" % (f["texto"], marca, fmt(f["a"]), fmt(f["b"])))
+            pl = s.get("plan")
+            if pl and pl.get("nota"):
+                out.append("  Plan: %s" % pl["nota"])
+            elif pl:
+                out.append("  Plan simulado (%s): referencia %s · invalidación %s · R %s · objetivo %sR %s" % (
+                    pl["direccion"], fmt(pl["referencia"]), fmt(pl["invalidacion"]), fmt(pl["R"]),
+                    ("%g" % pl["objetivo_R"]).replace(".", ","), fmt(pl["objetivo"])))
+                if "zona" in pl:
+                    out.append("  Zona de entrada: %s a %s (%s)" % (fmt(pl["zona"][0]), fmt(pl["zona"][1]),
+                                                                 "dentro" if pl["en_zona"] else "fuera de zona"))
+                if "cantidad" in pl:
+                    out.append("  Tamaño simulado: %s unidades, pérdida en la invalidación %s (límite: %s)" % (
+                        fmt(pl["cantidad"]), fmt(pl["perdida_en_stop"]), pl["limite"]))
     out.append("\nSimulación: no se ha enviado ninguna orden.")
     return "\n".join(out)
 
@@ -287,6 +334,8 @@ def main(argv=None):
     p.add_argument("--datos", action="append", default=[], metavar="SIMBOLO@TF=ARCHIVO")
     p.add_argument("--ahora")
     p.add_argument("--estado", help="archivo JSON con las velas ya notificadas (se actualiza)")
+    p.add_argument("--capital", type=float, help="capital para el tamaño simulado")
+    p.add_argument("--riesgo-pct", type=float, default=1.0, help="%% del capital que se arriesga por operación (1)")
     p.add_argument("--json", action="store_true")
     a = p.parse_args(argv)
     try:
@@ -305,7 +354,7 @@ def main(argv=None):
             with open(a.estado, encoding="utf-8") as fh:
                 estado = json.load(fh)
         simbolos = reglas.get("simbolos") or sorted(por_simbolo)
-        res = [evaluar_simbolo(s, reglas, por_simbolo.get(s, {}), ahora, estado) for s in simbolos]
+        res = [evaluar_simbolo(s, reglas, por_simbolo.get(s, {}), ahora, estado, a.capital, a.riesgo_pct) for s in simbolos]
         if a.estado:
             with open(a.estado, "w", encoding="utf-8") as fh:
                 json.dump(estado, fh, ensure_ascii=False, indent=1, sort_keys=True)

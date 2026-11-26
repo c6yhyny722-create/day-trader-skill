@@ -1,22 +1,56 @@
 {
   "estrategia": "10 cripto 1h · ruptura 20 + contexto 4h",
   "fuente": "pine/10-cripto-1h (versión 2.0 en TradingView)",
-  "simbolos": ["BITSTAMP:BTCUSD", "BITSTAMP:ETHUSD"],
+  "simbolos": [
+    "BITSTAMP:BTCUSD",
+    "BITSTAMP:ETHUSD"
+  ],
   "temporalidad_contexto": "4h",
   "temporalidad_confirmacion": "1h",
   "retraso_maximo_horas": 24,
   "senales": {
     "alcista": [
-      {"a": "close@4h", "op": ">", "b": "ema(50)@4h", "texto": "Contexto 4h: cierre por encima de la EMA 50"},
-      {"a": "close", "op": ">", "b": "highest(20)[1]", "texto": "Vela 1h cerrada por encima del máximo de las 20 anteriores"}
+      {
+        "a": "close@4h",
+        "op": ">",
+        "b": "ema(50)@4h",
+        "texto": "Contexto 4h: cierre por encima de la EMA 50"
+      },
+      {
+        "a": "close",
+        "op": ">",
+        "b": "highest(20)[1]",
+        "texto": "Vela 1h cerrada por encima del máximo de las 20 anteriores"
+      }
     ],
     "bajista": [
-      {"a": "close@4h", "op": "<", "b": "ema(50)@4h", "texto": "Contexto 4h: cierre por debajo de la EMA 50"},
-      {"a": "close", "op": "<", "b": "lowest(20)[1]", "texto": "Vela 1h cerrada por debajo del mínimo de las 20 anteriores"}
+      {
+        "a": "close@4h",
+        "op": "<",
+        "b": "ema(50)@4h",
+        "texto": "Contexto 4h: cierre por debajo de la EMA 50"
+      },
+      {
+        "a": "close",
+        "op": "<",
+        "b": "lowest(20)[1]",
+        "texto": "Vela 1h cerrada por debajo del mínimo de las 20 anteriores"
+      }
     ]
   },
-  "invalidacion": {"alcista": "lowest(10)", "bajista": "highest(10)"},
+  "invalidacion": {
+    "alcista": "lowest(10)",
+    "bajista": "highest(10)"
+  },
+  "nivel": {
+    "alcista": "highest(20)[1]",
+    "bajista": "lowest(20)[1]"
+  },
   "zona_entrada_R": 0.5,
-  "riesgo": ["Solo simulación", "Sin órdenes al bróker"],
+  "objetivo_R": 2,
+  "riesgo": [
+    "Solo simulación",
+    "Sin órdenes al bróker"
+  ],
   "notas": ""
 }

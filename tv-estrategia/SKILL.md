@@ -30,6 +30,11 @@ python3 "${CLAUDE_SKILL_DIR}/comprobar.py" reglas.json \
     --estado estado-avisos.json          # PASA / NO PASA por condición, vela cerrada, hora de Madrid
 ```
 
+Las 11 skills `trader-*` (acciones de EE. UU.) se cuadran con TradingView según
+`MAPA-11-SKILLS.md`: `tv_a_yahoo.py` convierte velas de TradingView al formato que leen con
+`--offline`; para cripto se usa `comprobar.py` (con `--capital` y `--riesgo-pct` da el plan
+y el tamaño simulados).
+
 ## Reglas del usuario (siempre)
 
 - Respuestas en español claro y horas en Europe/Madrid.
