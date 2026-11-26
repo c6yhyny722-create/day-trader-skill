@@ -1,4 +1,4 @@
-# 10 criptomonedas · 1h · ruptura de 20 velas con contexto de 4h — reglas fijadas antes de la prueba
+# 10 criptomonedas · 1h · ruptura de 20 velas con contexto de 4h: reglas fijadas antes de la prueba
 
 Escritas el 2026-11-26, antes de calcular ningún resultado de estas monedas. No se ajustan después.
 La señal es la misma que en `../btcusd-1h-donchian/REGLAS.md`. Lo único nuevo es la zona de entrada.

@@ -1,4 +1,4 @@
-# BTCUSD 1h · ruptura de 20 velas con contexto de 4h — reglas fijadas antes de la prueba
+# BTCUSD 1h · ruptura de 20 velas con contexto de 4h: reglas fijadas antes de la prueba
 
 Escritas el 2026-11-26, antes de calcular ningún resultado. No se ajustan después.
 
