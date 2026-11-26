@@ -20,7 +20,7 @@ la sesión). Rellenar desde la transcripción o capturas del vídeo; lo que el v
 | Tamaño de posición | PENDIENTE | 100 % del capital (simulación) |
 | Comisión / deslizamiento | PENDIENTE | 0,1 % por lado / 2 ticks |
 | Periodo del backtest | PENDIENTE | Desde / Hasta |
-| Resultado declarado | título: +530,93 %; resumen de la transcripción: 218 % | — |
+| Resultado declarado | título: +530,93 %; resumen de la transcripción: 218 % | n/a |
 
 Si una regla del vídeo no cabe en los módulos de la plantilla, se añade como módulo nuevo; no se
 fuerza a parecerse a uno existente.

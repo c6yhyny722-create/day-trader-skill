@@ -36,3 +36,8 @@ son una **hipótesis de prueba**, no las reglas del vídeo. Ningún resultado co
   no crea alertas de indicador).
 - Pausar/borrar la alerta de COINBASE:BTCUSD (id 6158574788) y la antigua v1.0 de Bitstamp (id 6158577302)
   cuando la nueva esté activa.
+
+## Herramientas relacionadas
+
+- Skill `tv-estrategia/`: flujo completo en español (ficha → Pine → backtest → comprobación → alerta).
+- `tv-estrategia/prompts/01-extraer-estrategia.md`: pegar aquí la transcripción del vídeo.
