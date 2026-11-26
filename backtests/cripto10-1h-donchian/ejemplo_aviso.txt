@@ -1,0 +1,15 @@
+Cierre 1h 25-11-2026 15:00 (Madrid) · 10 señal(es)
+BTCUSD · Bajista · Vela de 1 h cerrada · Cierre: 57,994.56 · Zona de entrada: 57,662.73 – 58,362.42 · Invalidación: 59,393.94
+ETHUSD · Bajista · Vela de 1 h cerrada · Cierre: 1,630.13 · Zona de entrada: 1,613.95 – 1,631.14 · Invalidación: 1,664.51
+XRPUSD · Bajista · Vela de 1 h cerrada · Cierre: 0.89306 · Zona de entrada: 0.88741 – 0.90372 · Invalidación: 0.92567
+SOLUSD · Bajista · Vela de 1 h cerrada · Cierre: 66.781 · Zona de entrada: 65.939 – 67.210 · Invalidación: 69.322
+HYPEUSD · Bajista · Vela de 1 h cerrada · Cierre: 56.883 · Zona de entrada: 56.471 – 57.681 · Invalidación: 59.304
+ZECUSD · Bajista · Vela de 1 h cerrada · Cierre: 691.87 · Zona de entrada: 684.25 – 709.41 · Invalidación: 742.19
+DOGEUSD · Bajista · Vela de 1 h cerrada · Cierre: 0.052844 · Zona de entrada: 0.052435 – 0.053473 · Invalidación: 0.054919
+LINKUSD · Bajista · Vela de 1 h cerrada · Cierre: 8.5370 · Zona de entrada: 8.4558 – 8.5810 · Invalidación: 8.7873
+ADAUSD · Bajista · Vela de 1 h cerrada · Cierre: 0.13728 · Zona de entrada: 0.13595 – 0.13921 · Invalidación: 0.14380
+XLMUSD · Bajista · Vela de 1 h cerrada · Cierre: 0.120470 · Zona de entrada: 0.119356 – 0.121280 · Invalidación: 0.124318
+
+Cierre 1h 23-07-2026 15:00 (Madrid) · 2 señal(es)
+DOGEUSD · Bajista · Vela de 1 h cerrada · Cierre: 0.071189 · Señal confirmada · Fuera de zona de entrada (Zona de entrada: 0.071353 – 0.072100) · Invalidación: 0.072683
+XLMUSD · Bajista · Vela de 1 h cerrada · Cierre: 0.183133 · Zona de entrada: 0.181796 – 0.183476 · Invalidación: 0.186492
