@@ -1,0 +1,104 @@
+//@version=6
+// Plantilla de backtest para la estrategia del vídeo «Cómo Usar CLAUDE Para Hacer Trading» (Alex Ruiz).
+// ESTADO: PENDIENTE DE LAS REGLAS DEL VÍDEO. Las reglas por defecto son una HIPÓTESIS (cruce de medias
+// con filtro de tendencia), NO lo que explica el vídeo. Sustituir con la ficha FICHA.md antes de sacar conclusiones.
+// Solo simulación: no envía órdenes.
+strategy("Video Claude · plantilla backtest", shorttitle="Video Claude BT", overlay=true,
+     initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=100,
+     commission_type=strategy.commission.percent, commission_value=0.1, slippage=2,
+     pyramiding=0, process_orders_on_close=false, calc_on_every_tick=false)
+
+// ---------- Periodo (dos ventanas: referencia y contraste) ----------
+GP = "Periodo"
+desde = input.time(timestamp("2024-01-01T00:00:00Z"), "Desde", group=GP)
+hasta = input.time(timestamp("2026-11-26T00:00:00Z"), "Hasta", group=GP)
+enPeriodo = time >= desde and time < hasta
+
+// ---------- Dirección ----------
+dir = input.string("Ambas", "Dirección", options=["Alcista", "Bajista", "Ambas"])
+usaL = dir != "Bajista"
+usaS = dir != "Alcista"
+
+// ---------- Entrada (módulo) ----------
+GE = "Entrada"
+tipoEnt = input.string("Cruce de medias", "Tipo de entrada", options=["Cruce de medias", "Ruptura de N velas", "RSI sale de extremo"], group=GE)
+tipoMA  = input.string("EMA", "Tipo de media", options=["EMA", "SMA"], group=GE)
+maRap   = input.int(9,  "Media rápida", minval=1, group=GE)
+maLen   = input.int(21, "Media lenta", minval=2, group=GE)
+nBrk    = input.int(20, "Velas para la ruptura", minval=2, group=GE)
+rsiLen  = input.int(14, "RSI · periodo", minval=2, group=GE)
+rsiBajo = input.float(30, "RSI · sobreventa", group=GE)
+rsiAlto = input.float(70, "RSI · sobrecompra", group=GE)
+
+// ---------- Filtros ----------
+GF = "Filtros"
+usaTend = input.bool(true, "Filtro de tendencia (precio vs media larga)", group=GF)
+tendLen = input.int(200, "Media larga", minval=2, group=GF)
+tendTF  = input.timeframe("", "Temporalidad del filtro (vacío = la del gráfico)", group=GF)
+
+// ---------- Salidas ----------
+GS = "Salidas"
+tipoStop = input.string("ATR", "Stop", options=["ATR", "Mínimo/máximo de N velas", "Porcentaje"], group=GS)
+atrLen   = input.int(14, "ATR · periodo", minval=1, group=GS)
+atrMult  = input.float(2.0, "ATR · múltiplo", minval=0.1, step=0.1, group=GS)
+nStop    = input.int(10, "Velas para el stop", minval=1, group=GS)
+pctStop  = input.float(2.0, "Stop en %", minval=0.1, step=0.1, group=GS)
+rObj     = input.float(2.0, "Objetivo en R (0 = sin objetivo)", minval=0.0, step=0.5, group=GS)
+salCruce = input.bool(true, "Salir también con el cruce contrario", group=GS)
+
+// ---------- Cálculos ----------
+ma(src, n) => tipoMA == "EMA" ? ta.ema(src, n) : ta.sma(src, n)
+mRap = ma(close, maRap)
+mLen = ma(close, maLen)
+rsi  = ta.rsi(close, rsiLen)
+hh   = ta.highest(high, nBrk)[1]
+ll   = ta.lowest(low, nBrk)[1]
+atr  = ta.atr(atrLen)
+lowN  = ta.lowest(low, nStop)
+highN = ta.highest(high, nStop)
+tend = request.security(syminfo.tickerid, tendTF, ta.ema(close, tendLen)[1], lookahead=barmerge.lookahead_on)
+tendOK_L = not usaTend or close > tend
+tendOK_S = not usaTend or close < tend
+
+sigL = switch tipoEnt
+    "Cruce de medias"     => ta.crossover(mRap, mLen)
+    "Ruptura de N velas"  => close > hh
+    "RSI sale de extremo" => ta.crossover(rsi, rsiBajo)
+sigS = switch tipoEnt
+    "Cruce de medias"     => ta.crossunder(mRap, mLen)
+    "Ruptura de N velas"  => close < ll
+    "RSI sale de extremo" => ta.crossunder(rsi, rsiAlto)
+
+stopDe(bool largo) =>
+    switch tipoStop
+        "ATR"                      => largo ? close - atrMult * atr : close + atrMult * atr
+        "Mínimo/máximo de N velas" => largo ? lowN : highN
+        => largo ? close * (1 - pctStop / 100) : close * (1 + pctStop / 100)
+stopL = stopDe(true)
+stopS = stopDe(false)
+
+// ---------- Órdenes simuladas (señal al cierre de la vela, ejecución en la apertura siguiente) ----------
+plano = strategy.position_size == 0
+if enPeriodo and barstate.isconfirmed and plano
+    if usaL and sigL and tendOK_L and stopL < close
+        R = close - stopL
+        strategy.entry("L", strategy.long)
+        strategy.exit("L-sal", "L", stop=stopL, limit=rObj > 0 ? close + rObj * R : na)
+    else if usaS and sigS and tendOK_S and stopS > close
+        R = stopS - close
+        strategy.entry("S", strategy.short)
+        strategy.exit("S-sal", "S", stop=stopS, limit=rObj > 0 ? close - rObj * R : na)
+
+if salCruce and tipoEnt == "Cruce de medias"
+    if strategy.position_size > 0 and ta.crossunder(mRap, mLen)
+        strategy.close("L", comment="Cruce contrario")
+    if strategy.position_size < 0 and ta.crossover(mRap, mLen)
+        strategy.close("S", comment="Cruce contrario")
+
+if not enPeriodo and strategy.position_size != 0
+    strategy.close_all(comment="Fin del periodo")
+
+// ---------- Gráfico ----------
+plot(mRap, "Media rápida", color.aqua)
+plot(mLen, "Media lenta", color.orange)
+plot(usaTend ? tend : na, "Media larga", color.gray)

@@ -14,6 +14,9 @@ ABOUT = ("11 Claude skills for day trading: scan thousands of charts, track brea
 # skills on the way to an order carry the safety block
 ORDER_PATH = ["trader-scanner", "trader-entry", "trader-exit", "trader-timemachine", "trader-budget",
               "trader-pelosi", "trader-risk", "trader-broker", "trader-alerts"]
+# this fork's own additions, kept outside the eleven-skill pack (not in the plugin manifest)
+PERSONAL_SKILLS = ["tv-estrategia"]
+PERSONAL_DIRS = ["pine", "backtests"]
 V1_ONLY = ["trader-copycat", "trader-screener", "trader-tax", "trader-rebalance"]
 
 
@@ -35,12 +38,26 @@ def every_text_file():
 class Repo(unittest.TestCase):
     def test_eleven_skill_folders_at_the_root(self):
         found = sorted(d for d in os.listdir(ROOT)
-                       if os.path.isfile(os.path.join(ROOT, d, "SKILL.md")))
+                       if os.path.isfile(os.path.join(ROOT, d, "SKILL.md")) and d not in PERSONAL_SKILLS)
         self.assertEqual(found, sorted(SKILLS))
 
     def test_root_matches_the_reel(self):
-        root = sorted(d for d in os.listdir(ROOT) if not d.startswith(".git"))
-        self.assertEqual(root, sorted([".claude-plugin", "LICENSE", "README.md", "tests"] + SKILLS))
+        root = sorted(d for d in os.listdir(ROOT)
+                      if not d.startswith(".git") and d != ".claude")
+        self.assertEqual(root, sorted([".claude-plugin", "LICENSE", "README.md", "tests"] + SKILLS
+                                     + PERSONAL_SKILLS + PERSONAL_DIRS))
+
+    def test_project_skills_link_to_the_root_folders(self):
+        # .claude/skills/ (optional) registers the eleven skills for Claude Code
+        # in this project, as links to the root folders, never as copies.
+        base = os.path.join(ROOT, ".claude", "skills")
+        if not os.path.isdir(base):
+            self.skipTest("no project-local .claude/skills")
+        self.assertEqual(sorted(os.listdir(base)), sorted(SKILLS + PERSONAL_SKILLS))
+        for name in SKILLS + PERSONAL_SKILLS:
+            link = os.path.join(base, name)
+            self.assertTrue(os.path.islink(link), name)
+            self.assertEqual(os.path.realpath(link), os.path.realpath(os.path.join(ROOT, name)))
 
     def test_frontmatter_name_and_description(self):
         for s in SKILLS:

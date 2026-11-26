@@ -1,0 +1,34 @@
+
+// ---------- SOLO PRUEBA: resumen de señales por moneda en una ventana fija ----------
+inWin = time >= 1792101600000 and time < 1795694400000
+acum(float k) =>
+    var float nl = 0.0
+    var float ns = 0.0
+    var float ck = 0.0
+    if inWin and not na(k) and k != 0
+        if k > 0
+            nl += 1
+        else
+            ns += 1
+        ck += k * (math.floor(time / 3600000) % 9973)
+    [nl, ns, ck]
+[l1, n1, c1] = acum(k1)
+[l2, n2, c2] = acum(k2)
+[l3, n3, c3] = acum(k3)
+[l4, n4, c4x] = acum(k4)
+[l5, n5, c5] = acum(k5)
+[l6, n6, c6] = acum(k6)
+[l7, n7, c7] = acum(k7)
+[l8, n8, c8] = acum(k8)
+[l9, n9, c9] = acum(k9)
+[l10, n10, c10] = acum(k10)
+plot(l1, "L1"), plot(n1, "S1"), plot(c1, "C1")
+plot(l2, "L2"), plot(n2, "S2"), plot(c2, "C2")
+plot(l3, "L3"), plot(n3, "S3"), plot(c3, "C3")
+plot(l4, "L4"), plot(n4, "S4"), plot(c4x, "C4")
+plot(l5, "L5"), plot(n5, "S5"), plot(c5, "C5")
+plot(l6, "L6"), plot(n6, "S6"), plot(c6, "C6")
+plot(l7, "L7"), plot(n7, "S7"), plot(c7, "C7")
+plot(l8, "L8"), plot(n8, "S8"), plot(c8, "C8")
+plot(l9, "L9"), plot(n9, "S9"), plot(c9, "C9")
+plot(l10, "L10"), plot(n10, "S10"), plot(c10, "C10")
