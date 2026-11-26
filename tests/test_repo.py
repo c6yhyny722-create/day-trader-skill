@@ -39,8 +39,21 @@ class Repo(unittest.TestCase):
         self.assertEqual(found, sorted(SKILLS))
 
     def test_root_matches_the_reel(self):
-        root = sorted(d for d in os.listdir(ROOT) if not d.startswith(".git"))
+        root = sorted(d for d in os.listdir(ROOT)
+                      if not d.startswith(".git") and d != ".claude")
         self.assertEqual(root, sorted([".claude-plugin", "LICENSE", "README.md", "tests"] + SKILLS))
+
+    def test_project_skills_link_to_the_root_folders(self):
+        # .claude/skills/ (optional) registers the eleven skills for Claude Code
+        # in this project, as links to the root folders, never as copies.
+        base = os.path.join(ROOT, ".claude", "skills")
+        if not os.path.isdir(base):
+            self.skipTest("no project-local .claude/skills")
+        self.assertEqual(sorted(os.listdir(base)), sorted(SKILLS))
+        for name in SKILLS:
+            link = os.path.join(base, name)
+            self.assertTrue(os.path.islink(link), name)
+            self.assertEqual(os.path.realpath(link), os.path.realpath(os.path.join(ROOT, name)))
 
     def test_frontmatter_name_and_description(self):
         for s in SKILLS:
