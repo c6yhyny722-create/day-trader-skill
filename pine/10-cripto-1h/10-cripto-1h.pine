@@ -1,0 +1,159 @@
+//@version=6
+// 10 criptomonedas · 1h · ruptura de 20 velas con contexto de 4h. Simulación: no envía órdenes.
+// Reglas: backtests/cripto10-1h-donchian/REGLAS.md
+// Úsalo en un gráfico de 1 hora (recomendado: BITSTAMP:BTCUSD, que cotiza las 24 horas sin huecos).
+// v1.1: usa el último dato disponible de cada moneda aunque llegue con retraso, pone en cada línea
+//       la hora real de cierre de SU vela (Europe/Madrid) y no repite velas ya notificadas.
+indicator("10 cripto 1h · ruptura 20 + contexto 4h", shorttitle="10 cripto 1h", overlay=true)
+
+// ---------- Parámetros ----------
+modo   = input.string("Ambas", "Señal", options=["Alcista", "Bajista", "Ambas"])
+nBrk   = input.int(20, "Velas para la ruptura", minval=2)
+nStop  = input.int(10, "Velas para la invalidación", minval=1)
+emaLen = input.int(50, "EMA del contexto de 4h", minval=1)
+zonaR  = input.float(0.5, "Ancho de la zona de entrada (en R)", minval=0.0, step=0.1)
+avisarFuera = input.bool(true, "Incluir en el aviso las señales fuera de zona")
+maxRetH     = input.int(24, "Retraso máximo aceptado del dato (horas)", minval=0)
+verTabla    = input.bool(true, "Mostrar la tabla de monedas")
+
+// ---------- Lista editable de monedas (símbolo exacto con su exchange) ----------
+G = "Monedas (exchange:símbolo)"
+s1  = input.symbol("BITSTAMP:BTCUSD",  "1",  group=G, inline="1"),  a1  = input.bool(true, "", group=G, inline="1")
+s2  = input.symbol("BITSTAMP:ETHUSD",  "2",  group=G, inline="2"),  a2  = input.bool(true, "", group=G, inline="2")
+s3  = input.symbol("BITSTAMP:XRPUSD",  "3",  group=G, inline="3"),  a3  = input.bool(true, "", group=G, inline="3")
+s4  = input.symbol("BITSTAMP:SOLUSD",  "4",  group=G, inline="4"),  a4  = input.bool(true, "", group=G, inline="4")
+s5  = input.symbol("BITSTAMP:HYPEUSD", "5",  group=G, inline="5"),  a5  = input.bool(true, "", group=G, inline="5")
+s6  = input.symbol("BITSTAMP:ZECUSD",  "6",  group=G, inline="6"),  a6  = input.bool(true, "", group=G, inline="6")
+s7  = input.symbol("BITSTAMP:DOGEUSD", "7",  group=G, inline="7"),  a7  = input.bool(true, "", group=G, inline="7")
+s8  = input.symbol("BITSTAMP:LINKUSD", "8",  group=G, inline="8"),  a8  = input.bool(true, "", group=G, inline="8")
+s9  = input.symbol("BITSTAMP:ADAUSD",  "9",  group=G, inline="9"),  a9  = input.bool(true, "", group=G, inline="9")
+s10 = input.symbol("BITSTAMP:XLMUSD",  "10", group=G, inline="10"), a10 = input.bool(true, "", group=G, inline="10")
+
+usaL = modo != "Bajista"
+usaS = modo != "Alcista"
+es1h = timeframe.period == "60"
+HORA = 3600000
+
+// ---------- Cálculo en el contexto de cada moneda ----------
+datos1h() =>
+    [time, time_close, close, ta.highest(high, nBrk)[1], ta.lowest(low, nBrk)[1], ta.lowest(low, nStop), ta.highest(high, nStop), syminfo.mintick]
+
+ctx4h() =>
+    [close[1], ta.ema(close, emaLen)[1]]
+
+nombre(string sym) =>
+    parts = str.split(sym, ":")
+    array.size(parts) > 1 ? array.get(parts, 1) : sym
+
+exch(string sym) =>
+    parts = str.split(sym, ":")
+    array.size(parts) > 1 ? array.get(parts, 0) : "?"
+
+fmt(float x, float mt) =>
+    dec = mt > 0 ? math.max(0, math.round(-math.log10(mt))) : 2
+    str.tostring(mt > 0 ? math.round(x / mt) * mt : x, dec > 0 ? "#,##0." + str.repeat("0", dec) : "#,##0")
+
+madrid(int ms) =>
+    str.format_time(ms, "dd-MM-yyyy HH:mm", "Europe/Madrid")
+
+// Devuelve: código (+1 alcista en zona, +2 alcista fuera, -1 bajista en zona, -2 bajista fuera, 0 nada, na sin dato) y la línea del aviso
+evaluar(string sym, bool activa) =>
+    [t, tc0, c, hh, ll, stL, stS, mt] = request.security(sym, "60", datos1h(), lookahead=barmerge.lookahead_off)
+    [c4, e4] = request.security(sym, "240", ctx4h(), lookahead=barmerge.lookahead_on)
+    // Cierre real de la vela de la moneda (si el feed no da time_close, inicio + 1 h)
+    int tc = na(tc0) ? (na(t) ? na : t + HORA) : tc0
+    // Última vela de esta moneda ya incluida en un aviso (estado propio de cada llamada)
+    var int ultimaNotif = 0
+    float code = 0.0
+    string linea = ""
+    // Se acepta el dato aunque llegue con retraso: basta con que la vela esté cerrada
+    // (su cierre no es posterior al de la vela del gráfico) y no supere el retraso máximo.
+    int retrasoMs = na(tc) ? na : time_close - tc
+    bool valida = not na(tc) and retrasoMs >= 0 and retrasoMs <= maxRetH * HORA
+    if not activa or not valida or na(hh) or na(c4) or na(e4)
+        code := na
+    else
+        bool sigL = usaL and c4 > e4 and c > hh
+        bool sigS = usaS and c4 < e4 and c < ll
+        if sigL or sigS
+            float stop = sigL ? stL : stS
+            float lvl  = sigL ? hh : ll
+            float R    = math.abs(c - stop)
+            float zlo  = sigL ? lvl : lvl - zonaR * R
+            float zhi  = sigL ? lvl + zonaR * R : lvl
+            bool enZona = c >= zlo and c <= zhi
+            code := (sigL ? 1 : -1) * (enZona ? 1 : 2)
+            bool nueva = tc > ultimaNotif   // vela aún no notificada
+            if nueva and (enZona or avisarFuera)
+                string base = nombre(sym) + " · " + (sigL ? "Alcista" : "Bajista") + " · Vela de 1 h cerrada a las " + madrid(tc) + " (Madrid) · Cierre: " + fmt(c, mt)
+                string ret  = retrasoMs > 0 ? " · Dato con retraso de " + str.tostring(math.round(retrasoMs / HORA)) + " h" : ""
+                string zona = "Zona de entrada: " + fmt(zlo, mt) + " – " + fmt(zhi, mt)
+                string inv  = "Invalidación: " + fmt(stop, mt)
+                linea := enZona ? base + ret + " · " + zona + " · " + inv : base + ret + " · Señal confirmada · Fuera de zona de entrada (" + zona + ") · " + inv
+                // Solo se marca en el cierre confirmado, que es cuando sale el aviso
+                if barstate.isconfirmed
+                    ultimaNotif := tc
+    [code, linea]
+
+[k1, m1]   = evaluar(s1, a1)
+[k2, m2]   = evaluar(s2, a2)
+[k3, m3]   = evaluar(s3, a3)
+[k4, m4]   = evaluar(s4, a4)
+[k5, m5]   = evaluar(s5, a5)
+[k6, m6]   = evaluar(s6, a6)
+[k7, m7]   = evaluar(s7, a7)
+[k8, m8]   = evaluar(s8, a8)
+[k9, m9]   = evaluar(s9, a9)
+[k10, m10] = evaluar(s10, a10)
+
+// ---------- Un único aviso por cierre con las monedas no notificadas antes ----------
+lineas = array.from(m1, m2, m3, m4, m5, m6, m7, m8, m9, m10)
+codigos = array.from(k1, k2, k3, k4, k5, k6, k7, k8, k9, k10)
+texto = array.new_string()
+for l in lineas
+    if l != ""
+        array.push(texto, l)
+nSenales = 0
+for k in codigos
+    if not na(k) and k != 0
+        nSenales += 1
+
+cabecera = "Aviso tras el cierre 1h de las " + madrid(time_close) + " (Madrid) · " + str.tostring(array.size(texto)) + " señal(es) nueva(s)"
+mensaje = cabecera + "\n" + array.join(texto, "\n")
+
+if es1h and barstate.isconfirmed and array.size(texto) > 0
+    alert(mensaje, alert.freq_once_per_bar_close)
+
+// ---------- Marcas en el gráfico y datos para comprobar ----------
+plotshape(es1h and array.size(texto) > 0, "Hay aviso", shape.diamond, location.top, color.yellow, size=size.tiny)
+plot(nSenales, "Nº de señales", display=display.data_window)
+plot(array.size(texto), "Nº de líneas en el aviso", display=display.data_window)
+plot(k1, "1", display=display.data_window)
+plot(k2, "2", display=display.data_window)
+plot(k3, "3", display=display.data_window)
+plot(k4, "4", display=display.data_window)
+plot(k5, "5", display=display.data_window)
+plot(k6, "6", display=display.data_window)
+plot(k7, "7", display=display.data_window)
+plot(k8, "8", display=display.data_window)
+plot(k9, "9", display=display.data_window)
+plot(k10, "10", display=display.data_window)
+
+// ---------- Tabla: símbolo exacto, exchange y estado ----------
+var table tb = table.new(position.top_right, 3, 12, bgcolor=color.new(color.black, 20), border_width=1)
+estado(float k, bool activa) =>
+    not activa ? "Desactivada" : na(k) ? "Sin dato válido" : k == 1 ? "Alcista · en zona" : k == 2 ? "Alcista · fuera de zona" : k == -1 ? "Bajista · en zona" : k == -2 ? "Bajista · fuera de zona" : "Sin señal"
+if verTabla and barstate.islast
+    table.cell(tb, 0, 0, "Símbolo", text_color=color.white)
+    table.cell(tb, 1, 0, "Exchange", text_color=color.white)
+    table.cell(tb, 2, 0, "Última vela 1h cerrada", text_color=color.white)
+    syms = array.from(s1, s2, s3, s4, s5, s6, s7, s8, s9, s10)
+    acts = array.from(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10)
+    // en la última vela (aún abierta) se muestra el estado de la vela anterior, ya cerrada
+    prev = array.from(k1[1], k2[1], k3[1], k4[1], k5[1], k6[1], k7[1], k8[1], k9[1], k10[1])
+    for i = 0 to 9
+        table.cell(tb, 0, i + 1, nombre(array.get(syms, i)), text_color=color.white)
+        table.cell(tb, 1, i + 1, exch(array.get(syms, i)), text_color=color.white)
+        table.cell(tb, 2, i + 1, estado(array.get(prev, i), array.get(acts, i)), text_color=color.white)
+    if not es1h
+        table.cell(tb, 0, 11, "Pon el gráfico en 1 hora: el aviso solo funciona en 1h", text_color=color.orange)
