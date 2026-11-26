@@ -1,0 +1,49 @@
+//@version=6
+// BTCUSD 1h · ruptura de 20 velas con contexto de 4h (simulación; no envía órdenes)
+// Reglas: backtests/btcusd-1h-donchian/REGLAS.md
+indicator("BTC 1h ruptura 20 + contexto 4h", shorttitle="BTC ruptura 1h", overlay=true, max_lines_count=500)
+
+modo   = input.string("Ambas", "Señal", options=["Alcista", "Bajista", "Ambas"])
+nBrk   = input.int(20, "Velas para la ruptura", minval=2)
+nStop  = input.int(10, "Velas para la invalidación (stop)", minval=1)
+emaLen = input.int(50, "EMA del contexto", minval=1)
+tfCtx  = input.timeframe("240", "Marco del contexto")
+rr     = input.float(2.0, "Objetivo en R", minval=0.1, step=0.5)
+verCanal = input.bool(true, "Mostrar niveles de ruptura")
+
+// Contexto: la última vela de 4h ya cerrada (sin repintado)
+[c4, e4] = request.security(syminfo.tickerid, tfCtx, [close[1], ta.ema(close, emaLen)[1]], lookahead=barmerge.lookahead_on)
+ctxUp = c4 > e4
+ctxDn = c4 < e4
+
+// Niveles de ruptura: las 20 velas anteriores, sin contar la actual
+hh = ta.highest(high, nBrk)[1]
+ll = ta.lowest(low, nBrk)[1]
+// Invalidación: las 10 últimas velas, incluida la de señal
+stopL = ta.lowest(low, nStop)
+stopS = ta.highest(high, nStop)
+
+usaL = modo != "Bajista"
+usaS = modo != "Alcista"
+
+sigL = usaL and barstate.isconfirmed and ctxUp and close > hh
+sigS = usaS and barstate.isconfirmed and ctxDn and close < ll
+
+tgtL = close + rr * (close - stopL)
+tgtS = close - rr * (stopS - close)
+
+plot(verCanal and usaL ? hh : na, "Nivel ruptura alcista", color=color.new(color.teal, 40), style=plot.style_stepline)
+plot(verCanal and usaS ? ll : na, "Nivel ruptura bajista", color=color.new(color.orange, 40), style=plot.style_stepline)
+
+plotshape(sigL, "Señal alcista", shape.triangleup, location.belowbar, color.teal, size=size.small, text="L")
+plotshape(sigS, "Señal bajista", shape.triangledown, location.abovebar, color.orange, size=size.small, text="S")
+
+if sigL
+    line.new(bar_index, stopL, bar_index + 48, stopL, color=color.red, style=line.style_dotted)
+    line.new(bar_index, tgtL, bar_index + 48, tgtL, color=color.green, style=line.style_dotted)
+if sigS
+    line.new(bar_index, stopS, bar_index + 48, stopS, color=color.red, style=line.style_dotted)
+    line.new(bar_index, tgtS, bar_index + 48, tgtS, color=color.green, style=line.style_dotted)
+
+alertcondition(sigL, "BTC 1h señal alcista", "BTC 1h: cierre sobre el máximo de 20 velas con 4h sobre EMA50. Simulación, sin órdenes.")
+alertcondition(sigS, "BTC 1h señal bajista", "BTC 1h: cierre bajo el mínimo de 20 velas con 4h bajo EMA50. Simulación, sin órdenes.")
