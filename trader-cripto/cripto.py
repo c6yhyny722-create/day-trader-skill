@@ -154,6 +154,22 @@ MATERIAS = {
     "EURUSD": {"yahoo": "EURUSD=X", "tv": "FX:EURUSD", "fuente": "Yahoo (EURUSD=X)", "dec": 5, "exacto": True,
                "coste": 0.02},
 }
+# Divisas mayores (mismas reglas que EUR/USD; las menos líquidas, algo más caras).
+for _par, _yh, _dec, _coste in (("GBPUSD", "GBPUSD=X", 5, 0.02), ("USDJPY", "JPY=X", 3, 0.02),
+                                ("USDCAD", "CAD=X", 5, 0.025), ("AUDUSD", "AUDUSD=X", 5, 0.025),
+                                ("NZDUSD", "NZDUSD=X", 5, 0.025)):
+    MATERIAS[_par] = {"yahoo": _yh, "tv": "FX:" + _par, "fuente": "Yahoo (%s)" % _yh, "dec": _dec,
+                      "exacto": True, "coste": _coste, "tipo": "divisa"}
+MATERIAS["EURUSD"]["tipo"] = "divisa"
+MATERIAS["ORO"]["tipo"] = MATERIAS["PLATA"]["tipo"] = "metal"
+# Cripto que Bitstamp no tiene: velas de Yahoo, mercado de 24 h como el resto de cripto.
+for _c in ("FIL", "THETA", "RUNE"):
+    MATERIAS[_c] = {"yahoo": _c + "-USD", "tv": "BINANCE:%sUSDT" % _c, "fuente": "Yahoo (%s-USD)" % _c,
+                    "exacto": True, "tipo": "cripto"}
+# Acciones de EE. UU.: velas de 1h solo con la bolsa abierta (empiezan a las y media).
+for _a in ("AAPL", "TSLA", "MSTR"):
+    MATERIAS[_a] = {"yahoo": _a, "tv": "NASDAQ:" + _a, "fuente": "Yahoo (%s)" % _a, "exacto": True,
+                    "coste": 0.06, "tipo": "accion"}
 ALIAS = {"GOLD": "ORO", "XAU": "ORO", "XAUUSD": "ORO", "SILVER": "PLATA", "XAG": "PLATA", "XAGUSD": "PLATA",
          "EUR": "EURUSD", "EURODOLAR": "EURUSD", "EURODÓLAR": "EURUSD"}
 YAHOO_CHART = "https://query2.finance.yahoo.com/v8/finance/chart/%s?interval=60m&range=%s"
@@ -168,6 +184,16 @@ def coste_de(moneda):
     """Coste ida y vuelta en % (comisión + diferencial) por defecto: cripto 0,1; oro y plata
     0,05; EUR/USD 0,02 (1-2 pips)."""
     return MATERIAS.get(moneda, {}).get("coste", 0.1)
+
+
+def tipo_de(moneda):
+    """cripto (Bitstamp o Yahoo), metal, divisa o accion."""
+    return MATERIAS.get(moneda, {}).get("tipo", "cripto")
+
+
+def con_cierres(moneda):
+    """Mercados que cierran (huecos normales en las velas): metales, divisas y acciones."""
+    return tipo_de(moneda) in ("metal", "divisa", "accion")
 
 
 def es_materia(moneda):
@@ -264,10 +290,17 @@ def bajar_yahoo(simbolo, horas):
         raise Error("Yahoo no tiene datos de %s" % simbolo)
     r = res[0]
     q = r["indicators"]["quote"][0]
+    ts = r.get("timestamp") or []
+    # las velas buenas empiezan siempre al mismo minuto (en punto, o a y media en acciones);
+    # la última, si está a medias, llega con otra hora y se descarta
+    cuenta = {}
+    for t in ts:
+        cuenta[t % H1] = cuenta.get(t % H1, 0) + 1
+    desfase = max(cuenta, key=cuenta.get) if cuenta else 0
     velas = []
-    for i, t in enumerate(r.get("timestamp") or []):
+    for i, t in enumerate(ts):
         o, h, l, c, v = (q[k][i] for k in ("open", "high", "low", "close", "volume"))
-        if None in (o, h, l, c) or t % H1:
+        if None in (o, h, l, c) or t % H1 != desfase:
             continue
         velas.append({"t": int(t), "o": o, "h": h, "l": l, "c": c, "v": v or 0})
     return velas
@@ -440,8 +473,9 @@ def estado_moneda(moneda, v1, v4, ahora, vigencia=24):
     ult = v1[-1]
     retraso = (ahora // H1 * H1) - (ult["t"] + H1)
     res = {"moneda": moneda, "cierre": ult["c"], "cierre_ts": ult["t"] + H1, "retraso_h": max(retraso, 0) / 3600.0}
-    continuo = not es_materia(moneda)
-    max_retraso = 24 if continuo else 72        # oro y plata cierran el fin de semana
+    continuo = not con_cierres(moneda)
+    # los mercados que cierran el fin de semana pueden llevar 72 h sin vela (acciones, con festivo, 100)
+    max_retraso = 24 if continuo else 100 if tipo_de(moneda) == "accion" else 72
     if retraso > max_retraso * 3600:
         res.update(ahora="NO EVALUABLE", motivo="el último dato tiene más de %d h de retraso" % max_retraso)
         return res
@@ -704,11 +738,19 @@ FUGAS = {
     "ORO": {"spread": 0.03, "comision": 0.0, "desliz": 0.01, "swap": 0.015},
     "PLATA": {"spread": 0.03, "comision": 0.0, "desliz": 0.01, "swap": 0.015},
     "EURUSD": {"spread": 0.01, "comision": 0.0, "desliz": 0.005, "swap": 0.005},
+    "GBPUSD": {"spread": 0.01, "comision": 0.0, "desliz": 0.005, "swap": 0.005},
+    "USDJPY": {"spread": 0.01, "comision": 0.0, "desliz": 0.005, "swap": 0.005},
+    "USDCAD": {"spread": 0.015, "comision": 0.0, "desliz": 0.005, "swap": 0.005},
+    "AUDUSD": {"spread": 0.015, "comision": 0.0, "desliz": 0.005, "swap": 0.005},
+    "NZDUSD": {"spread": 0.015, "comision": 0.0, "desliz": 0.005, "swap": 0.005},
 }
+FUGAS_ACCION = {"spread": 0.02, "comision": 0.0, "desliz": 0.02, "swap": 0.0}   # sin apalancamiento
 ROLLOVER = 22 * 3600   # 17:00 de Nueva York en UTC (invierno); una noche = un cruce de esta hora
 
 
 def fugas_de(moneda):
+    if tipo_de(moneda) == "accion":
+        return dict(FUGAS_ACCION)
     return dict(FUGAS.get(moneda, FUGAS_CRIPTO))
 
 
@@ -719,7 +761,9 @@ def factor_spread(ts, moneda=None):
     la sesión asiática (00:00 a 08:00, Madrid). Las noticias fuertes lo abren más y no se
     pueden prever: por eso los supuestos van por el lado prudente."""
     m = a_madrid(ts)
-    if moneda and es_materia(moneda):
+    if moneda and tipo_de(moneda) == "accion":
+        return 1.5 if (ts // H1) % 24 in (13, 14) else 1.0     # primera hora de la sesión de Nueva York
+    if moneda and con_cierres(moneda):
         if (ts // H1) % 24 in (21, 22, 23):
             return 3.0
         return 1.5 if m.hour < 8 else 1.0
@@ -872,7 +916,9 @@ def diarias_de(v1, desfase=0, minimo=24):
 
 
 def diarias_para(v1, moneda=None):
-    return diarias_de(v1, DESFASE_SESION, 20) if moneda and es_materia(moneda) else diarias_de(v1)
+    if moneda and tipo_de(moneda) == "accion":
+        return diarias_de(v1, 0, 4)
+    return diarias_de(v1, DESFASE_SESION, 20) if moneda and tipo_de(moneda) in ("metal", "divisa") else diarias_de(v1)
 
 
 def datos_filtros(v1, moneda=None):
@@ -886,7 +932,7 @@ def datos_filtros(v1, moneda=None):
     for i in range(15, len(cs)):
         rs[i] = rsi(cs[max(0, i - 200):i + 1])
     dia = {b["t"]: (b["c"], e, r) for b, e, r in zip(d, e50, rs)}
-    desfase = DESFASE_SESION if moneda and es_materia(moneda) else 0
+    desfase = DESFASE_SESION if moneda and tipo_de(moneda) in ("metal", "divisa") else 0
     return {"vmed": vmed, "dia": dia, "dias": sorted(dia), "desfase": desfase}
 
 
@@ -1149,7 +1195,12 @@ def _monedas(lista):
     for m in (lista or MONEDAS):
         m = m.upper().split(":")[-1].replace("/", "").replace("-", "")
         m = ALIAS.get(m, m)
-        out.append(m if m in MATERIAS else m.replace("USD", ""))
+        if m not in MATERIAS:
+            for fin in ("USDT", "USD"):
+                if m.endswith(fin) and len(m) > len(fin) and m[:-len(fin)]:
+                    m = m[:-len(fin)]
+                    break
+        out.append(ALIAS.get(m, m))
     return out
 
 
