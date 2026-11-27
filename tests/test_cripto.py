@@ -454,6 +454,76 @@ class EuroDolar(unittest.TestCase):
         self.assertAlmostEqual(t["apalancamiento"], 100 / 0.00384 * 1.09349 / 10000, places=2)
 
 
+class Fugas(unittest.TestCase):
+    def _senal(self):
+        v1 = velas_1h(300, salto=0.2)
+        v4 = a_4h(v1)
+        s = cr.senal_en(v1, len(v1) - 1, v4)
+        return v1, s
+
+    def _sigue(self, v1, precios):
+        for o, h, l, c in precios:
+            v1.append({"t": v1[-1]["t"] + H1, "o": o, "h": h, "l": l, "c": c, "v": 1.0})
+
+    def test_ideal_es_la_regla_sin_costes(self):
+        v1, s = self._senal()
+        self._sigue(v1, [(s["entrada"], s["objetivo"] + 0.01, s["entrada"] - 0.01, s["objetivo"])])
+        o = cr.operaciones_reales(v1, [s])[0]
+        self.assertEqual(o["fin"], "objetivo")
+        self.assertAlmostEqual(o["R"], 2.0)
+
+    def test_costes_y_deslizamiento_restan(self):
+        v1, s = self._senal()
+        self._sigue(v1, [(s["entrada"], s["entrada"] + 0.01, s["stop"] - 0.01, s["stop"])])
+        ideal = cr.operaciones_reales(v1, [s])[0]["R"]
+        real = cr.operaciones_reales(v1, [s], fugas={"spread": 0.1, "desliz": 0.05})[0]["R"]
+        self.assertAlmostEqual(ideal, -1.0)
+        self.assertLess(real, ideal)
+
+    def test_retraso_no_persigue(self):
+        v1, s = self._senal()
+        fuera = s["zona"][1] + 0.5                       # la siguiente vela abre por encima de la zona
+        self._sigue(v1, [(fuera, fuera + 5, fuera - 0.01, fuera + 4)])
+        self.assertEqual(cr.operaciones_reales(v1, [s], siguiente=True), [])
+        self.assertEqual(len(cr.operaciones_reales(v1, [s], siguiente=False)), 1)
+
+    def test_retraso_entra_en_la_apertura_siguiente(self):
+        v1, s = self._senal()
+        e = (s["zona"][0] + s["zona"][1]) / 2
+        self._sigue(v1, [(e, s["objetivo"] + 0.01, e - 0.01, s["objetivo"])])
+        o = cr.operaciones_reales(v1, [s], siguiente=True)[0]
+        self.assertEqual(o["entrada_ts"], v1[-1]["t"])
+        self.assertAlmostEqual(o["R"], (s["objetivo"] - e) / (e - s["stop"]))
+
+    def test_noches(self):
+        t = 86400 * 20000 + 12 * 3600                  # mediodía UTC
+        self.assertEqual(cr.noches(t, t + 3600), 0)
+        self.assertEqual(cr.noches(t, t + 12 * 3600), 1)  # cruza las 22:00 UTC
+        self.assertEqual(cr.noches(t, t + 3 * 86400), 3)
+
+    def test_swap_resta_por_noche(self):
+        v1, s = self._senal()
+        larga = [(s["entrada"], s["entrada"] + 0.01, s["entrada"] - 0.01, s["entrada"])] * 30
+        self._sigue(v1, larga + [(s["entrada"], s["objetivo"] + 0.01, s["entrada"], s["objetivo"])])
+        sin = cr.operaciones_reales(v1, [s])[0]["R"]
+        con = cr.operaciones_reales(v1, [s], fugas={"swap": 0.05})[0]["R"]
+        self.assertLess(con, sin)
+
+    def test_cartera_tres_a_la_vez_y_tope_diario(self):
+        base = cr.parse_ahora("2026-11-25 10:00")
+        op = lambda h, dur, r: {"entrada_ts": base + h * H1, "salida_ts": base + (h + dur) * H1, "R": r}
+        por = {"A": [op(0, 10, 1)], "B": [op(0, 10, 1)], "C": [op(0, 10, 1)], "D": [op(1, 2, 1)]}
+        self.assertEqual(len(cr.cartera(por)), 3)                 # la cuarta no cabe
+        por = {"A": [op(0, 1, -1), op(3, 1, 1)], "B": [op(0, 1, -1)], "C": [op(2, 1, 1)]}
+        self.assertEqual(len(cr.cartera(por)), 2)                 # tras −2R en el día, no abre más
+
+    def test_fugas_por_activo(self):
+        self.assertEqual(cr.fugas_de("BTC")["swap"], 0.0)
+        self.assertGreater(cr.fugas_de("ORO")["swap"], 0)
+        f = cr.fugas_de("EURUSD")
+        self.assertAlmostEqual(f["spread"] + 2 * f["desliz"], cr.coste_de("EURUSD"))
+
+
 class FichasYNoticias(unittest.TestCase):
     def test_ficha_con_los_ocho_campos(self):
         f = cr.ficha(1, "LINK", "COMPRA", 9.694, "1h", "Cierre por encima", cr.parse_ahora("2026-11-28 20:00"))
