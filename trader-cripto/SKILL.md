@@ -34,6 +34,7 @@ para confirmar, horas de Madrid**. Es para estudio e investigación con capital 
 | trader-entry + trader-exit | Señal de la regla, zona de entrada, invalidación y objetivo 2R | `senal MONEDA` |
 | trader-timemachine | 10.000 recorridos de las próximas horas y cada señal pasada | `simular MONEDA` |
 | (nuevo) | Compara stops y objetivos en dos periodos, con costes | `estudiar` |
+| (nuevo) | Estudio a fondo de una moneda con 3 años: diario, niveles, horas, regla y filtros | `afondo MONEDA` |
 | trader-budget | Unidades fraccionarias para un % de riesgo, enseñando la cuenta | `tamano` |
 | trader-risk | PASA / BLOQUEA con los límites del método | `riesgo` |
 | trader-alerts | Último precio de Bitstamp y ficha de alerta propuesta | `precio`, `ficha` |
@@ -62,6 +63,7 @@ python3 "${CLAUDE_SKILL_DIR}/cripto.py" escanear LINK BTC        # solo esas
 python3 "${CLAUDE_SKILL_DIR}/cripto.py" senal LINK               # señal, plan y fichas
 python3 "${CLAUDE_SKILL_DIR}/cripto.py" simular LINK             # 10.000 recorridos, 48 h
 python3 "${CLAUDE_SKILL_DIR}/cripto.py" simular LINK --entrada 9.694 --stop 9.107 --horas 24
+python3 "${CLAUDE_SKILL_DIR}/cripto.py" afondo BTC               # 3 años de BTC: lo más fiable
 python3 "${CLAUDE_SKILL_DIR}/cripto.py" estudiar                 # las 10 monedas, 83 días, coste 0,1 %
 python3 "${CLAUDE_SKILL_DIR}/cripto.py" estudiar LINK SOL --lado compra --coste 0.2
 python3 "${CLAUDE_SKILL_DIR}/cripto.py" tamano --capital 10000 --riesgo 0.5 --entrada 9.694 --stop 9.107
@@ -99,6 +101,24 @@ entrada, mínimo de 20 velas) y objetivos de 1,5R, 2R y 3R, con coste por operac
 - Al probar 12 combinaciones, alguna puede ganar por suerte. Una propuesta hay que volver a
   comprobarla con datos nuevos antes de usarla.
 - **Nunca cambia la regla por su cuenta.** La regla se fija antes; cambiarla lo decide el usuario.
+
+## Estudio a fondo: `afondo MONEDA`
+
+Con unos 3 años de velas de 1h (26.000 velas, un minuto de descarga) da: estado y fichas,
+tendencia diaria (EMA 20/50/200, RSI, ATR, cambios a 7, 30, 90 y 365 días) con aviso si el
+RSI diario está por debajo de 30 o por encima de 70, niveles de giro en 4h, horas de más y
+menos movimiento en hora de Madrid, y la regla con cuatro filtros decididos de antemano
+(horas con Nueva York abierta, volumen, tendencia diaria, RSI diario extremo) y dos stops,
+en tres periodos de un año. Un filtro solo se marca ✅ si mejora a la regla en los tres.
+
+Lecciones ya aprendidas (BTC, 29/11/2023 a 27/11/2026):
+- **83 días engañan.** Con 83 días la regla en BTC parecía perder (−0,10 R); con 3 años gana
+  +0,12 R por operación, con 40 % de aciertos y positiva en los tres años, en línea con la
+  prueba de referencia de TradingView (41 %, factor 1,20).
+- **No cerrar por tiempo.** Las operaciones se miden hasta el stop o el objetivo (como el
+  script), con un tope de 30 días. Cortarlas a las 48 h empeoraba mucho el resultado.
+- El stop de 1,5 ATR que parecía mejor en 83 días no mejora en 3 años. Ningún filtro
+  mejora a la regla en los tres años: por ahora, la regla se queda como está.
 
 ## Revisión continua
 

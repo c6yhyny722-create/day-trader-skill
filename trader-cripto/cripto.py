@@ -288,22 +288,23 @@ def indicadores(v1):
 
 # ---------------------------------------------------------------- la regla del script
 
-def contexto(v4, inicio_1h):
+def mapa_contexto(v4):
+    """{inicio de la vela de 4h: (cierre, EMA 50)} calculado una vez."""
+    es = ema([b["c"] for b in v4], N_EMA)
+    return {b["t"]: (b["c"], e) for b, e in zip(v4, es)}
+
+
+def contexto(v4, inicio_1h, mapa=None):
     """(cierre 4h, EMA 50 4h) de la vela de 4h anterior a la que contiene la vela de 1h."""
-    cubo = inicio_1h // H4 * H4
-    idx = {b["t"]: i for i, b in enumerate(v4)}
-    i = idx.get(cubo - H4)
-    if i is None:
-        return None, None
-    e = ema([b["c"] for b in v4[:i + 1]], N_EMA)[-1]
-    return v4[i]["c"], e
+    mapa = mapa if mapa is not None else mapa_contexto(v4)
+    return mapa.get(inicio_1h // H4 * H4 - H4, (None, None))
 
 
-def senal_en(v1, j, v4):
+def senal_en(v1, j, v4, mapa=None):
     """Señal de la vela 1h j (cerrada) o None. Igual que evaluar() del script de Pine."""
     if j < N_RUPTURA:
         return None
-    c4, e4 = contexto(v4, v1[j]["t"])
+    c4, e4 = contexto(v4, v1[j]["t"], mapa)
     if c4 is None or e4 is None:
         return None
     b = v1[j]
@@ -522,9 +523,9 @@ def stop_variante(modo, s, v1, atrs):
 
 
 def senales(v1, v4, lado=None, solo_zona=True):
-    out = []
+    out, mapa = [], mapa_contexto(v4)
     for j in range(N_RUPTURA, len(v1)):
-        s = senal_en(v1, j, v4)
+        s = senal_en(v1, j, v4, mapa)
         if s and (not lado or s["lado"] == lado) and (s["en_zona"] or not solo_zona):
             out.append(s)
     return out
@@ -569,7 +570,7 @@ def operaciones(v1, lista, horas=48, stop_modo="regla", obj_r=OBJETIVO_R, coste_
     return filas
 
 
-def historial(v1, v4, horas=48, lado=None):
+def historial(v1, v4, horas=720, lado=None):
     """Operaciones pasadas de la regla tal cual (sin costes)."""
     return operaciones(v1, senales(v1, v4, lado), horas)
 
@@ -583,6 +584,115 @@ def resumen(filas):
             "R_medio": sum(rs) / len(rs), "R_total": sum(rs),
             "factor": gan / per if per > 0 else None,
             "objetivo": sum(f["fin"] == "objetivo" for f in filas), "stop": sum(f["fin"] == "stop" for f in filas)}
+
+
+# ---------------------------------------------------------------- filtros y estudio a fondo
+
+# Filtros decididos ANTES de mirar resultados, cada uno con una razón de mercado.
+FILTROS = [
+    ("ninguno", "la regla tal cual"),
+    ("horas", "solo velas que cierran de 15:00 a 19:00 (Madrid), con Nueva York abierta"),
+    ("volumen", "volumen de la vela de la señal por encima de su media de 20"),
+    ("diario", "a favor de la tendencia diaria (cierre del día anterior frente a su EMA 50)"),
+    ("extremo", "no vender con RSI diario < 30 ni comprar con RSI diario > 70"),
+]
+
+
+def diarias_de(v1):
+    """Velas diarias (día UTC, como el diario de Bitstamp en TradingView) hechas con las de 1h."""
+    dias = {}
+    for b in v1:
+        dias.setdefault(b["t"] // 86400 * 86400, []).append(b)
+    out = []
+    for t in sorted(dias):
+        bs = dias[t]
+        if len(bs) == 24:
+            out.append({"t": t, "o": bs[0]["o"], "h": max(x["h"] for x in bs), "l": min(x["l"] for x in bs),
+                        "c": bs[-1]["c"], "v": sum(x["v"] for x in bs)})
+    return out
+
+
+def datos_filtros(v1):
+    """Lo que necesitan los filtros, calculado una vez."""
+    vols = [b["v"] for b in v1]
+    vmed = [None if i < 20 else sum(vols[i - 20:i]) / 20.0 for i in range(len(v1))]
+    d = diarias_de(v1)
+    cs = [b["c"] for b in d]
+    e50 = ema(cs, 50)
+    rs = [None] * len(cs)
+    for i in range(15, len(cs)):
+        rs[i] = rsi(cs[max(0, i - 200):i + 1])
+    dia = {b["t"]: (b["c"], e, r) for b, e, r in zip(d, e50, rs)}
+    return {"vmed": vmed, "dia": dia}
+
+
+def pasa_filtro(nombre, s, v1, extra):
+    if nombre == "ninguno":
+        return True
+    largo = s["lado"] == "COMPRA"
+    if nombre == "horas":
+        return 15 <= a_madrid(s["cierre_ts"]).hour <= 19
+    if nombre == "volumen":
+        m = extra["vmed"][s["j"]]
+        return m is not None and v1[s["j"]]["v"] > m
+    ayer = extra["dia"].get(s["t"] // 86400 * 86400 - 86400)
+    if not ayer or ayer[1] is None or ayer[2] is None:
+        return False
+    c, e, r = ayer
+    if nombre == "diario":
+        return c > e if largo else c < e
+    if nombre == "extremo":
+        return r < 70 if largo else r > 30
+    raise Error("filtro desconocido: %s" % nombre)
+
+
+def estudio_filtros(v1, v4, horas=720, coste_pct=0.1, tramos=3, min_ops=30, margen=0.05):
+    """Cada filtro y cada stop (regla y 1,5 ATR), objetivo 2R, en `tramos` periodos seguidos.
+    Un filtro se da por bueno solo si mejora a la regla en TODOS los periodos, con margen y
+    con al menos `min_ops` operaciones en cada uno."""
+    lista, atrs, extra = senales(v1, v4), atr(v1), datos_filtros(v1)
+    t0, t1 = v1[N_RUPTURA]["t"], v1[-1]["t"]
+    cortes = [t0 + (t1 - t0) * k // tramos for k in range(tramos + 1)]
+    cortes[-1] = t1 + H1 * 10
+    filas = []
+    for stop_modo in ("regla", "atr15"):
+        for nombre, texto in FILTROS:
+            sel = [x for x in lista if pasa_filtro(nombre, x, v1, extra)]
+            ops = operaciones(v1, sel, horas, stop_modo, OBJETIVO_R, coste_pct, atrs)
+            partes = [resumen([o for o in ops if cortes[k] <= o["ts"] < cortes[k + 1]]) for k in range(tramos)]
+            filas.append({"filtro": nombre, "texto": texto, "stop": stop_modo, "total": resumen(ops),
+                          "partes": partes, "por_lado": {l: resumen([o for o in ops if o["lado"] == l])
+                                                         for l in ("COMPRA", "VENTA")}})
+    base = filas[0]
+    for f in filas:
+        f["robusto"] = f is not base and all(
+            p.get("n", 0) >= min_ops and b.get("n", 0) and p["R_medio"] > b["R_medio"] + margen
+            for p, b in zip(f["partes"], base["partes"]))
+    return {"cortes": cortes, "filas": filas, "coste_pct": coste_pct, "horas": horas}
+
+
+def perfil_horario(v1):
+    """Movimiento medio (rango en %) y volumen relativo de cada hora de Madrid."""
+    rangos, vols = {}, {}
+    for a, b in zip(v1, v1[1:]):
+        h = a_madrid(b["t"]).hour
+        rangos.setdefault(h, []).append(100.0 * (b["h"] - b["l"]) / a["c"])
+        vols.setdefault(h, []).append(b["v"])
+    vm = statistics.mean(v for vs in vols.values() for v in vs) or 1.0
+    return {h: (statistics.mean(rangos[h]), statistics.mean(vols[h]) / vm) for h in sorted(rangos)}
+
+
+def giros(v4, n=3, cuantos=8):
+    """Máximos y mínimos de giro en 4h (más alto o más bajo que las n velas de cada lado)."""
+    out = []
+    for i in range(n, len(v4) - n):
+        b = v4[i]
+        lados = [v4[i + k] for k in range(-n, n + 1) if k]
+        if all(b["h"] > x["h"] for x in lados):
+            out.append(("resistencia", b["h"], b["t"]))
+        if all(b["l"] < x["l"] for x in lados):
+            out.append(("soporte", b["l"], b["t"]))
+    return out[-cuantos:]
 
 
 # ---------------------------------------------------------------- tamaño y riesgo
@@ -820,7 +930,7 @@ def cmd_simular(a):
     entrada, stop, obj, origen = _plan_de(a, v1c, v4c, ahora)
     lado = "COMPRA" if stop < entrada else "VENTA"
     mc = simular(v1c, entrada, stop, obj, v1c[-1]["t"] + H1, a.horas, a.recorridos, a.semilla)
-    hist = historial(v1c, v4c, a.horas, lado)
+    hist = historial(v1c, v4c, 720, lado)
     dias = (v1c[-1]["t"] - v1c[0]["t"]) / 86400.0
     out = ["%s %s %s (%s) · entrada %s · stop %s · objetivo %s · próximas %d h" % (
         ICONO[lado], lado, m, origen, fmt(entrada), fmt(stop), fmt(obj), a.horas), "",
@@ -836,7 +946,7 @@ def cmd_simular(a):
     if hist:
         n = len(hist)
         out.append("Historia: %d operaciones de %s en zona (sin contar dos veces señales seguidas). Objetivo %d · "
-                   "stop %d · ni uno ni otro %d · R medio %s, sin costes." % (n, lado, sum(h["fin"] == "objetivo" for h in hist),
+                   "stop %d · sin cerrar a los 30 días %d · R medio %s, sin costes (hasta stop u objetivo)." % (n, lado, sum(h["fin"] == "objetivo" for h in hist),
                                     sum(h["fin"] == "stop" for h in hist), sum(h["fin"] == "ninguno" for h in hist),
                                     fmt(statistics.mean(h["R"] for h in hist), 2)))
         if n < 20:
@@ -851,7 +961,7 @@ def cmd_simular(a):
 OBJETIVOS_R = (1.5, 2.0, 3.0)
 
 
-def estudio(datos, horas=48, coste_pct=0.1, lado=None):
+def estudio(datos, horas=720, coste_pct=0.1, lado=None):
     """datos = {moneda: (v1, v4)} cerradas. Compara cada stop × objetivo en dos mitades del
     periodo. Devuelve filas por variante (todas las monedas juntas) y por moneda (la regla)."""
     t_ini = max(v1[0]["t"] for v1, _ in datos.values())
@@ -942,6 +1052,64 @@ def cmd_estudiar(a):
         out.append("Aviso: la regla tal cual pierde de media en este periodo (%s R por operación con costes)." % rm(base["total"]))
     for x in faltan:
         out.append("Sin datos de " + x)
+    out += ["", "Un estudio del pasado no garantiza el futuro.", CIERRE]
+    print("\n".join(out))
+    return 0
+
+
+def cmd_afondo(a):
+    ahora = parse_ahora(a.ahora)
+    m = a.moneda.upper()
+    v1, v4 = cargar(m, a.offline, a.dias * 24)
+    v1, v4 = cerradas(v1, H1, ahora), cerradas(v4, H4, ahora)
+    r = estado_moneda(m, v1, v4, ahora)
+    out = [informe([r]).rsplit("\n\nDatos:", 1)[0], ""]
+    d = diarias_de(v1)
+    if len(d) >= 50:
+        cs = [b["c"] for b in d]
+        e20, e50 = ema(cs, 20)[-1], ema(cs, 50)[-1]
+        e200 = ema(cs, 200)[-1] if len(cs) >= 200 else None
+        at = atr(d)[-1]
+        cambio = lambda n: pct(100 * (cs[-1] / cs[-1 - n] - 1), 1) if len(cs) > n else "sin dato"
+        out += ["Diario (cierre %s): EMA 20 %s · EMA 50 %s · EMA 200 %s · RSI %s · ATR %s (%s)." % (
+                    fmt(cs[-1]), fmt(e20), fmt(e50), fmt(e200), fmt(rsi(cs), 1), fmt(at), pct(100 * at / cs[-1], 1)),
+                "Cambio: 7 días %s · 30 días %s · 90 días %s · 1 año %s." % (cambio(7), cambio(30), cambio(90), cambio(365))]
+        if rsi(cs) < 30:
+            out.append("Aviso: RSI diario por debajo de 30, muy vendido: riesgo de rebote fuerte contra las VENTAS.")
+        elif rsi(cs) > 70:
+            out.append("Aviso: RSI diario por encima de 70, muy comprado: riesgo de caída fuerte contra las COMPRAS.")
+    out += ["", "Niveles de giro en 4h (los más recientes):"]
+    for tipo, p, t in giros(v4):
+        out.append("  %s %s (%s)" % (tipo, fmt(p), hora(t)))
+    ph = perfil_horario(v1[-24 * 90:])
+    top = sorted(ph.items(), key=lambda x: -x[1][0])[:4]
+    low = sorted(ph.items(), key=lambda x: x[1][0])[:3]
+    out += ["", "Horas de más movimiento (Madrid, últimos 90 días): " + ", ".join(
+        "%02d:00 (%s, volumen ×%s)" % (h, pct(rg), fmt(vr, 1)) for h, (rg, vr) in top),
+        "Horas más tranquilas: " + ", ".join("%02d:00 (%s)" % (h, pct(rg)) for h, (rg, vr) in low)]
+    est = estudio_filtros(v1, v4, a.horas, a.coste)
+    c = est["cortes"]
+    fecha = lambda t: a_madrid(t).strftime("%d/%m/%Y")
+    out += ["", "Estudio de la regla con filtros · %s a %s (%s velas de 1h) · objetivo 2R · coste %s · máximo %d h" % (
+        fecha(c[0]), fecha(v1[-1]["t"]), fmt(len(v1), 0), pct(est["coste_pct"]), est["horas"]),
+        "Periodos: P1 hasta %s · P2 hasta %s · P3 hasta hoy." % (fecha(c[1]), fecha(c[2])),
+        "| Filtro | Stop | Ops | Aciertos | R P1 | R P2 | R P3 | R medio | Compras R | Ventas R |",
+        "|---|---|---|---|---|---|---|---|---|---|"]
+    rm = lambda x: fmt(x["R_medio"], 2) if x.get("n") else "-"
+    for f in est["filas"]:
+        t = f["total"]
+        out.append("| %s%s | %s | %d | %s | %s | %s | %s | %s | %s | %s |" % (
+            f["filtro"], " ✅" if f["robusto"] else "", "regla" if f["stop"] == "regla" else "1,5 ATR",
+            t.get("n", 0), pct(t["acierto"], 0) if t.get("n") else "-", rm(f["partes"][0]), rm(f["partes"][1]),
+            rm(f["partes"][2]), rm(t), rm(f["por_lado"]["COMPRA"]), rm(f["por_lado"]["VENTA"])))
+    buenos = [f for f in est["filas"] if f["robusto"]]
+    out.append("")
+    out.append("Filtros: " + "; ".join("%s = %s" % (n, t) for n, t in FILTROS[1:]) + ".")
+    if buenos:
+        out.append("✅ = mejora a la regla en los 3 periodos, con margen y operaciones suficientes. "
+                   "Es una PROPUESTA: la regla no se cambia sin que lo decidas tú.")
+    else:
+        out.append("Ningún filtro mejora a la regla en los 3 periodos: no conviene añadir ninguno todavía.")
     out += ["", "Un estudio del pasado no garantiza el futuro.", CIERRE]
     print("\n".join(out))
     return 0
@@ -1065,13 +1233,23 @@ def main(argv=None):
 
     s = sub.add_parser("estudiar", help="compara stops y objetivos en dos periodos")
     s.add_argument("monedas", nargs="*")
-    s.add_argument("--horas", type=int, default=48, help="horas máximas por operación (48)")
+    s.add_argument("--horas", type=int, default=720,
+                   help="horas máximas por operación (720 = 30 días: en la práctica, hasta stop u objetivo)")
     s.add_argument("--horas-datos", type=int, default=2000)
     s.add_argument("--coste", type=float, default=0.1, help="%% de coste ida y vuelta (0,1)")
     s.add_argument("--lado", choices=["compra", "venta"])
     s.add_argument("--json", action="store_true")
     comun(s)
     s.set_defaults(fn=cmd_estudiar)
+
+    s = sub.add_parser("afondo", help="estudio completo de una moneda con años de datos")
+    s.add_argument("moneda")
+    s.add_argument("--dias", type=int, default=1095, help="días de historia de 1h (1095, unos 3 años)")
+    s.add_argument("--horas", type=int, default=720,
+                   help="horas máximas por operación (720 = 30 días: en la práctica, hasta stop u objetivo)")
+    s.add_argument("--coste", type=float, default=0.1)
+    comun(s)
+    s.set_defaults(fn=cmd_afondo)
 
     s = sub.add_parser("tamano", help="unidades para un % de riesgo")
     s.add_argument("--capital", type=float, required=True)

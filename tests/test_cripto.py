@@ -261,6 +261,48 @@ class CalidadYEstudio(unittest.TestCase):
         self.assertLess(cr.stop_variante("colchon", s, v1, atrs), s["stop"])
 
 
+class AFondo(unittest.TestCase):
+    def test_diarias_solo_dias_completos(self):
+        v1 = velas_1h(24 * 5 + 7)
+        d = cr.diarias_de(v1)
+        self.assertEqual(len(d), 5)
+        self.assertEqual(d[0]["c"], v1[23]["c"])
+        self.assertEqual(d[0]["h"], max(b["h"] for b in v1[:24]))
+
+    def test_filtro_de_horas_en_hora_de_madrid(self):
+        t = cr.parse_ahora("2026-11-27 16:00")              # cierre de la vela, Madrid
+        s = {"lado": "COMPRA", "j": 0, "t": t - H1, "cierre_ts": t}
+        self.assertTrue(cr.pasa_filtro("horas", s, [], {}))
+        s["cierre_ts"] = cr.parse_ahora("2026-11-27 12:00")
+        self.assertFalse(cr.pasa_filtro("horas", s, [], {}))
+
+    def test_filtro_diario_y_extremo(self):
+        t = 86400 * 20000
+        extra = {"dia": {t - 86400: (100.0, 90.0, 25.0)}, "vmed": [None]}
+        compra = {"lado": "COMPRA", "j": 0, "t": t + 3600, "cierre_ts": t + 7200}
+        venta = dict(compra, lado="VENTA")
+        self.assertTrue(cr.pasa_filtro("diario", compra, [], extra))
+        self.assertFalse(cr.pasa_filtro("diario", venta, [], extra))
+        self.assertTrue(cr.pasa_filtro("extremo", compra, [], extra))
+        self.assertFalse(cr.pasa_filtro("extremo", venta, [], extra))   # RSI 25: no vender
+
+    def test_estudio_filtros_estructura(self):
+        v1 = velas_1h(24 * 40)
+        est = cr.estudio_filtros(v1, a_4h(v1), horas=24)
+        self.assertEqual(len(est["filas"]), 2 * len(cr.FILTROS))
+        self.assertFalse(est["filas"][0]["robusto"])            # la base nunca se marca
+        for f in est["filas"]:
+            self.assertEqual(len(f["partes"]), 3)
+
+    def test_giros(self):
+        v4 = a_4h(velas_1h(24 * 10))
+        v4[20]["h"] += 50
+        self.assertIn(("resistencia", v4[20]["h"], v4[20]["t"]), cr.giros(v4, cuantos=50))
+
+    def test_perfil_horario_24_horas(self):
+        self.assertEqual(sorted(cr.perfil_horario(velas_1h(24 * 3))), list(range(24)))
+
+
 class FichasYNoticias(unittest.TestCase):
     def test_ficha_con_los_ocho_campos(self):
         f = cr.ficha(1, "LINK", "COMPRA", 9.694, "1h", "Cierre por encima", cr.parse_ahora("2026-11-28 20:00"))
