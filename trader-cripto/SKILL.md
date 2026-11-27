@@ -36,6 +36,7 @@ para confirmar, horas de Madrid**. Es para estudio e investigación con capital 
 | (nuevo) | Compara stops y objetivos en dos periodos, con costes | `estudiar` |
 | (nuevo) | Estudio a fondo de una moneda con 3 años: diario, niveles, horas, regla y filtros | `afondo MONEDA` |
 | (nuevo) | Las 10 monedas ordenadas por oportunidad (señal activa, cercanía al disparo, ventaja en 3 años) | `oportunidades` |
+| (nuevo) | De backtest a realidad: las 6 fugas paso a paso (diferencial, deslizamiento, retraso, comisión, swap, exceso de operaciones) | `fugas` |
 | trader-budget | Unidades fraccionarias para un % de riesgo, enseñando la cuenta | `tamano` |
 | trader-risk | PASA / BLOQUEA con los límites del método | `riesgo` |
 | trader-alerts | Último precio de Bitstamp y ficha de alerta propuesta | `precio`, `ficha` |
@@ -113,6 +114,28 @@ python3 "${CLAUDE_SKILL_DIR}/cripto.py" noticias BTC ETH --horas 12
 - Resultado (12/02/2024 a 27/11/2026, coste 0,02 %): la regla **pierde** en EUR/USD
   (196 operaciones, 29 % de aciertos, −0,19 R, negativa en los tres periodos). Ningún filtro
   la vuelve rentable. Las rupturas funcionan peor en divisas, que suelen volver a su rango.
+
+## De backtest a realidad: `fugas`
+
+`fugas BTC` o `fugas BTC ETH SOL ORO ...` repite la regla tal cual y enseña cómo cae el
+resultado paso a paso, de «backtest ideal» a «mundo real», con las 6 fugas:
+
+| Paso | Qué hace |
+| --- | --- |
+| Backtest ideal | Entra al cierre exacto de la vela de la señal, sin costes |
+| 01 diferencial + 04 comisión | Diferencial por operación y comisión por lado |
+| 02 deslizamiento | La entrada, el stop y la salida por tiempo se llenan algo peor (el objetivo es orden límite) |
+| 03 retraso | Entra en la apertura de la vela siguiente (la alerta llega al cierre); si ya está fuera de la zona de entrada o pasado el stop, no entra |
+| 05 swap | Coste por cada noche abierta (cruce de las 17:00 de Nueva York) |
+| 06 exceso de operaciones | Con varias monedas: como mucho 3 a la vez y, tras perder el 2 % en el día, no abre más |
+
+Termina con un veredicto (🟢 gana / ⚪ a la par / 🔴 pierde en el mundo real), la tabla moneda a
+moneda y los supuestos de costes usados. Supuestos por defecto: cripto diferencial 0,08 %,
+deslizamiento 0,02 % por lado, sin comisión ni swap (sin apalancamiento); oro y plata 0,03 %,
+0,01 % y swap 0,015 % por noche; EUR/USD 0,01 %, 0,005 % y swap 0,005 % por noche. Son
+supuestos: si el bróker del usuario (Quantfury) cobra distinto, se cambian con `--spread`,
+`--comision`, `--desliz` y `--swap`. La IA leyendo patrones de velas no se usa: la regla es
+objetiva y medible.
 
 ## Costes por activo
 

@@ -670,6 +670,126 @@ def operaciones(v1, lista, horas=48, stop_modo="regla", obj_r=OBJETIVO_R, coste_
     return filas
 
 
+# ---------------------------------------------------------------- las 6 fugas: del backtest a la realidad
+
+# Supuestos por defecto (editables con --spread, --comision, --desliz, --swap). Todos en %:
+#   spread: diferencial, se paga una vez por operación (ida y vuelta)
+#   comision: por lado (entrada y salida)
+#   desliz: deslizamiento por lado en órdenes a mercado (entrada, stop y salida por tiempo;
+#           el objetivo es una orden límite y no desliza)
+#   swap: coste por noche mantenida (cruce de las 17:00 de Nueva York), sobre el importe
+# Cripto: sin apalancamiento no hay swap. Si se opera con apalancamiento o CFD, hay que ponerlo.
+FUGAS_CRIPTO = {"spread": 0.08, "comision": 0.0, "desliz": 0.02, "swap": 0.0}
+FUGAS = {
+    "ORO": {"spread": 0.03, "comision": 0.0, "desliz": 0.01, "swap": 0.015},
+    "PLATA": {"spread": 0.03, "comision": 0.0, "desliz": 0.01, "swap": 0.015},
+    "EURUSD": {"spread": 0.01, "comision": 0.0, "desliz": 0.005, "swap": 0.005},
+}
+ROLLOVER = 22 * 3600   # 17:00 de Nueva York en UTC (invierno); una noche = un cruce de esta hora
+
+
+def fugas_de(moneda):
+    return dict(FUGAS.get(moneda, FUGAS_CRIPTO))
+
+
+def noches(desde, hasta):
+    return max(0, (hasta - ROLLOVER) // 86400 - (desde - ROLLOVER) // 86400)
+
+
+def operaciones_reales(v1, lista, horas=720, fugas=None, siguiente=False):
+    """Como `operaciones`, con la regla tal cual, pero contando las fugas del mundo real:
+    diferencial, comisión y deslizamiento; con `siguiente`, la entrada es la apertura de la
+    vela que sigue a la señal (la alerta llega al cierre y se entra después) y, si esa
+    apertura ya está fuera de la zona de entrada o pasado el stop, no se entra (no se
+    persigue); y el swap por cada noche abierta. El R se mide sobre el riesgo real
+    (entrada real hasta el stop). Devuelve también la hora de entrada y de salida."""
+    f = dict(spread=0.0, comision=0.0, desliz=0.0, swap=0.0)
+    f.update(fugas or {})
+    d = f["desliz"] / 100.0
+    filas, libre_desde = [], -1
+    for s in lista:
+        j = s["j"]
+        if j <= libre_desde:
+            continue
+        largo, stop, obj = s["lado"] == "COMPRA", s["stop"], s["objetivo"]
+        if siguiente:
+            if j + 1 >= len(v1):
+                continue
+            e0, t_in, desde = v1[j + 1]["o"], v1[j + 1]["t"], j + 1
+            lo, hi = s["zona"]
+            if not (lo <= e0 <= hi) or ((e0 <= stop) if largo else (e0 >= stop)):
+                continue    # abrió fuera de la zona o pasado el stop: no se persigue
+        else:
+            e0, t_in, desde = s["entrada"], s["cierre_ts"], j + 1
+        e = e0 * (1 + d) if largo else e0 * (1 - d)
+        R = (e - stop) if largo else (stop - e)
+        if R <= 0:
+            continue
+        tramo = v1[desde:desde + horas]
+        toca = lambda b: (b["l"] <= stop or b["h"] >= obj) if largo else (b["h"] >= stop or b["l"] <= obj)
+        if len(tramo) < horas and not any(toca(b) for b in tramo):
+            continue    # aún no ha terminado
+        fin, k, salida = None, desde + len(tramo) - 1, None
+        for n, b in enumerate(tramo):
+            if (b["l"] <= stop) if largo else (b["h"] >= stop):
+                fin, k, salida = "stop", desde + n, stop * (1 - d) if largo else stop * (1 + d)
+                break
+            if (b["h"] >= obj) if largo else (b["l"] <= obj):
+                fin, k, salida = "objetivo", desde + n, obj
+                break
+        if fin is None:
+            fin, salida = "ninguno", tramo[-1]["c"] * (1 - d if largo else 1 + d)
+        t_out = v1[k]["t"] + H1
+        res = ((salida - e) if largo else (e - salida)) / R
+        res -= (f["spread"] + 2 * f["comision"]) / 100.0 * e / R
+        res -= noches(t_in, t_out) * f["swap"] / 100.0 * e / R
+        libre_desde = k
+        filas.append({"ts": s["cierre_ts"], "entrada_ts": t_in, "salida_ts": t_out, "lado": s["lado"],
+                      "fin": fin, "R": res, "riesgo_pct": 100 * R / e})
+    return filas
+
+
+def cartera(por_moneda, max_abiertas=3, tope_diario_R=-2.0):
+    """Junta las operaciones de varias monedas en el orden en que se abren y aplica los
+    límites del usuario: como mucho `max_abiertas` a la vez y, si en el día (Madrid) ya se ha
+    perdido `tope_diario_R` (con 1 % por operación, el 2 % del capital), no se abre ninguna más."""
+    todas = sorted(((o["entrada_ts"], m, o) for m, ops in por_moneda.items() for o in ops),
+                   key=lambda x: (x[0], x[1]))
+    aceptadas = []
+    for t, m, o in todas:
+        abiertas = sum(1 for _, a in aceptadas if a["salida_ts"] > t)
+        dia = a_madrid(t).date()
+        perdido = sum(a["R"] for _, a in aceptadas if a["salida_ts"] <= t and a_madrid(a["salida_ts"]).date() == dia)
+        if abiertas >= max_abiertas or perdido <= tope_diario_R:
+            continue
+        aceptadas.append((m, o))
+    return aceptadas
+
+
+PASOS_FUGAS = [
+    ("ideal", "Backtest ideal (entra al cierre exacto, sin costes)"),
+    ("costes", "+ 01 diferencial y 04 comisión"),
+    ("desliz", "+ 02 deslizamiento"),
+    ("retraso", "+ 03 retraso: entra en la vela siguiente y no persigue"),
+    ("swap", "+ 05 swap por noche"),
+]
+
+
+def fugas_moneda(v1, v4, moneda, horas=720, fugas=None):
+    """Las operaciones de la regla en cada paso, de ideal a real, para una moneda."""
+    f = fugas or fugas_de(moneda)
+    lista = senales(v1, v4)
+    pasos = {
+        "ideal": dict(spread=0, comision=0, desliz=0, swap=0),
+        "costes": dict(spread=f["spread"], comision=f["comision"], desliz=0, swap=0),
+        "desliz": dict(spread=f["spread"], comision=f["comision"], desliz=f["desliz"], swap=0),
+        "retraso": dict(spread=f["spread"], comision=f["comision"], desliz=f["desliz"], swap=0),
+        "swap": f,
+    }
+    return {p: operaciones_reales(v1, lista, horas, pasos[p], siguiente=p in ("retraso", "swap"))
+            for p, _ in PASOS_FUGAS}
+
+
 def historial(v1, v4, horas=720, lado=None):
     """Operaciones pasadas de la regla tal cual (sin costes)."""
     return operaciones(v1, senales(v1, v4, lado), horas)
@@ -1357,6 +1477,76 @@ def cmd_oportunidades(a):
     return 0
 
 
+def cmd_fugas(a):
+    ahora = parse_ahora(a.ahora)
+    monedas = _monedas(a.monedas)
+    res, faltan = {}, []
+    for m in monedas:
+        try:
+            v1, v4 = cargar(m, a.offline, a.dias * 24)
+            v1, v4 = cerradas(v1, H1, ahora), cerradas(v4, H4, ahora)
+            f = fugas_de(m)
+            for k in ("spread", "comision", "desliz", "swap"):
+                if getattr(a, k) is not None:
+                    f[k] = getattr(a, k)
+            res[m] = (fugas_moneda(v1, v4, m, a.horas, f), f, v1[0]["t"], v1[-1]["t"])
+        except Error as e:
+            faltan.append("%s (%s)" % (m, e))
+    if not res:
+        raise Error("no hay datos de ninguna moneda")
+    rm = lambda r: fmt(r["R_medio"], 2) if r.get("n") else "-"
+    fac = lambda r: fmt(r["factor"], 2) if r.get("factor") is not None else "-"
+    out = ["Mismo estudio, dos mundos: de backtest a realidad · %s · %s a %s (Madrid)" % (
+        ", ".join(res), a_madrid(min(x[2] for x in res.values())).strftime("%d/%m/%Y"),
+        a_madrid(max(x[3] for x in res.values())).strftime("%d/%m/%Y")),
+        "Regla del script tal cual (stop de 10 velas, objetivo 2R), sin solaparse, hasta stop u objetivo.", "",
+        "| Paso | Operaciones | Aciertos | R medio | Factor | Resultado con 1 % por operación |",
+        "|---|---|---|---|---|---|"]
+    filas = {}
+    for p, texto in PASOS_FUGAS:
+        ops = [o for x in res.values() for o in x[0][p]]
+        r = resumen(ops)
+        filas[p] = r
+        out.append("| %s | %d | %s | %s | %s | %s |" % (
+            texto, r.get("n", 0), pct(r["acierto"], 0) if r.get("n") else "-", rm(r), fac(r),
+            pct(r["R_total"], 1) if r.get("n") else "-"))
+    if len(res) > 1:
+        acept = cartera({m: x[0]["swap"] for m, x in res.items()}, a.max_abiertas, -a.tope_diario)
+        r = resumen([o for _, o in acept])
+        filas["cartera"] = r
+        out.append("| + 06 límite de cartera: %d a la vez y −%s %% al día | %d | %s | %s | %s | %s |" % (
+            a.max_abiertas, fmt(a.tope_diario, 0), r.get("n", 0), pct(r["acierto"], 0) if r.get("n") else "-",
+            rm(r), fac(r), pct(r["R_total"], 1) if r.get("n") else "-"))
+    ideal, real = filas["ideal"], filas.get("cartera") or filas["swap"]
+    out.append("")
+    if ideal.get("n") and real.get("n"):
+        out.append("Las fugas se comen %s R por operación (de %s a %s)." % (
+            fmt(ideal["R_medio"] - real["R_medio"], 2), rm(ideal), rm(real)))
+        out.append("Veredicto: %s" % ("🟢 la regla sigue ganando en el mundo real." if real["R_medio"] > 0.02 else
+                                       "⚪ en el mundo real queda a la par: no da ventaja." if real["R_medio"] > -0.02 else
+                                       "🔴 en el mundo real pierde: no conviene operarla así."))
+    if len(res) > 1:
+        out += ["", "Moneda a moneda, en el mundo real (todas las fugas menos el límite de cartera):",
+                "| Moneda | Operaciones | Aciertos | R medio | Ideal |", "|---|---|---|---|---|"]
+        for m, x in sorted(res.items(), key=lambda kv: -(resumen(kv[1][0]["swap"]).get("R_medio") or -9)):
+            r, i = resumen(x[0]["swap"]), resumen(x[0]["ideal"])
+            out.append("| %s | %d | %s | %s | %s |" % (m, r.get("n", 0), pct(r["acierto"], 0) if r.get("n") else "-",
+                                                      rm(r), rm(i)))
+    supuestos = sorted({(m if m in FUGAS else "cripto", "diferencial %s, comisión %s por lado, deslizamiento %s por lado, "
+                         "swap %s por noche" % (pct(x[1]["spread"], 3), pct(x[1]["comision"], 3), pct(x[1]["desliz"], 3),
+                                                pct(x[1]["swap"], 3))) for m, x in res.items()})
+    out += ["", "Supuestos de costes (cámbialos con --spread, --comision, --desliz y --swap si tu bróker es distinto):"]
+    out += ["  %s: %s" % (k, v) for k, v in supuestos]
+    out += ["  Cripto sin apalancamiento no paga swap; con apalancamiento o CFD, ponlo con --swap.",
+            "  El retraso se mide entrando en la apertura de la vela siguiente a la señal; si ya está fuera de la "
+            "zona de entrada, la operación no se hace.", ""]
+    for x in faltan:
+        out.append("Sin datos de " + x)
+    out += ["Un estudio del pasado no garantiza el futuro.", CIERRE]
+    print("\n".join(out))
+    return 0
+
+
 def cmd_tamano(a):
     if a.moneda:
         fijar_precision(_monedas([a.moneda])[0])
@@ -1519,6 +1709,19 @@ def main(argv=None):
     s.add_argument("--dias", type=int, default=1095)
     comun(s)
     s.set_defaults(fn=cmd_oportunidades)
+
+    s = sub.add_parser("fugas", help="de backtest a realidad: las 6 fugas, paso a paso")
+    s.add_argument("monedas", nargs="*")
+    s.add_argument("--dias", type=int, default=1095)
+    s.add_argument("--horas", type=int, default=720)
+    s.add_argument("--spread", type=float, help="%% de diferencial por operación")
+    s.add_argument("--comision", type=float, help="%% de comisión por lado")
+    s.add_argument("--desliz", type=float, help="%% de deslizamiento por lado")
+    s.add_argument("--swap", type=float, help="%% de swap por noche")
+    s.add_argument("--max-abiertas", type=int, default=3)
+    s.add_argument("--tope-diario", type=float, default=2.0, help="%% de pérdida diaria máxima (con 1 %% por operación)")
+    comun(s)
+    s.set_defaults(fn=cmd_fugas)
 
     s = sub.add_parser("tamano", help="unidades para un % de riesgo")
     s.add_argument("--capital", type=float, required=True)
