@@ -153,13 +153,20 @@ comandos:
 
 | Tipo | Activos | Datos | Símbolo de las fichas |
 | --- | --- | --- | --- |
-| Cripto en Bitstamp | DOT, UNI, ATOM, ARB, AVAX, LTC, AAVE, INJ, NEAR (y cualquier par USD de Bitstamp) | Bitstamp, 3 años | BITSTAMP:XXXUSD |
-| Cripto fuera de Bitstamp | FIL, THETA, RUNE | Yahoo, unos 2 años | BINANCE:XXXUSDT |
+| Cripto en Bitstamp | DOT, UNI, ARB, AVAX, LTC, AAVE, INJ, NEAR (y cualquier par USD de Bitstamp) | Bitstamp, 3 años | BITSTAMP:XXXUSD |
+| Cripto fuera de Bitstamp | FIL, THETA, RUNE, ATOM | Yahoo, unos 2 años | BINANCE:XXXUSDT |
 | Divisas | GBP/USD, USD/JPY (3 decimales), USD/CAD, AUD/USD, NZD/USD | Yahoo, casi 3 años | FX:XXXYYY |
 | Acciones | AAPL, TSLA, MSTR | Yahoo, unos 2 años, solo con la bolsa abierta | NASDAQ:XXX |
 
 Los nombres de Quantfury valen tal cual (BTC/USDT, FIL/USDT, USD/JPY). En acciones las velas
 de 1h empiezan a las y media, un día tiene unas 7 y el diferencial se abre en la primera hora.
+
+Pares que casi no se negocian: si más del 20 % de las velas no tienen ningún movimiento
+(máximo = mínimo), el activo sale NO EVALUABLE con el motivo y `fugas`/`afondo` no lo estudian.
+En Bitstamp, ATOM tenía el 100 % de velas planas, así que ATOM se lee de Yahoo.
+
+En `fugas` con varios activos, cada uno lleva su marca del mundo real: 🟢 gana, ⚪ a la par,
+🔴 pierde, ⚠️ menos de 60 operaciones (pocos datos, no fiable todavía).
 
 ## Costes por activo
 

@@ -163,7 +163,7 @@ for _par, _yh, _dec, _coste in (("GBPUSD", "GBPUSD=X", 5, 0.02), ("USDJPY", "JPY
 MATERIAS["EURUSD"]["tipo"] = "divisa"
 MATERIAS["ORO"]["tipo"] = MATERIAS["PLATA"]["tipo"] = "metal"
 # Cripto que Bitstamp no tiene: velas de Yahoo, mercado de 24 h como el resto de cripto.
-for _c in ("FIL", "THETA", "RUNE"):
+for _c in ("FIL", "THETA", "RUNE", "ATOM"):   # ATOM: en Bitstamp casi no se negocia
     MATERIAS[_c] = {"yahoo": _c + "-USD", "tv": "BINANCE:%sUSDT" % _c, "fuente": "Yahoo (%s-USD)" % _c,
                     "exacto": True, "tipo": "cripto"}
 # Acciones de EE. UU.: velas de 1h solo con la bolsa abierta (empiezan a las y media).
@@ -333,6 +333,23 @@ def cerradas(velas, paso, ahora):
     return [b for b in velas if b["t"] + paso <= ahora]
 
 
+MAX_PLANAS = 0.20
+
+
+def planas(velas):
+    """Parte de velas sin ningún movimiento (máximo = mínimo): un par que casi no se negocia
+    da datos engañosos (en Bitstamp, ATOM tenía el 100 %)."""
+    return sum(1 for b in velas if b["h"] == b["l"]) / float(len(velas)) if velas else 0.0
+
+
+def sin_negociacion(velas):
+    """Texto del motivo si la fuente casi no negocia este activo; vacío si está bien."""
+    f = planas(velas)
+    if f > MAX_PLANAS:
+        return "en esta fuente casi no se negocia (%s de velas sin movimiento): los datos no sirven" % pct(100 * f, 0)
+    return ""
+
+
 def revisar_velas(velas, paso, ultimas, huecos=True):
     """Problemas en las `ultimas` velas: huecos de tiempo o velas imposibles (máximo por
     debajo del mínimo, apertura o cierre fuera del rango). Lista vacía si todo cuadra.
@@ -481,6 +498,8 @@ def estado_moneda(moneda, v1, v4, ahora, vigencia=24):
         return res
     problemas = (revisar_velas(v1, H1, vigencia + N_RUPTURA + 1, continuo) +
                  revisar_velas(v4, H4, N_EMA, continuo))
+    if sin_negociacion(v1[-500:]):
+        problemas.insert(0, sin_negociacion(v1[-500:]))
     if problemas:
         res.update(ahora="NO EVALUABLE", motivo="datos dudosos: " + "; ".join(problemas[:3]))
         return res
@@ -1427,6 +1446,8 @@ def cmd_afondo(a):
     fijar_precision(m)
     v1, v4 = cargar(m, a.offline, a.dias * 24)
     v1, v4 = cerradas(v1, H1, ahora), cerradas(v4, H4, ahora)
+    if sin_negociacion(v1):
+        raise Error("%s: %s" % (m, sin_negociacion(v1)))
     r = estado_moneda(m, v1, v4, ahora)
     out = [informe([r]).rsplit("\n\nDatos:", 1)[0], ""]
     d = diarias_para(v1, m)
@@ -1573,6 +1594,16 @@ def cmd_oportunidades(a):
     return 0
 
 
+MIN_OPS_FIABLE = 60
+
+
+def marca_real(r):
+    """🟢 / ⚪ / 🔴 según el R medio en el mundo real; ⚠️ si hay pocas operaciones."""
+    if not r.get("n") or r["n"] < MIN_OPS_FIABLE:
+        return "⚠️"
+    return "🟢" if r["R_medio"] > 0.02 else "🔴" if r["R_medio"] < -0.02 else "⚪"
+
+
 def cmd_fugas(a):
     ahora = parse_ahora(a.ahora)
     monedas = _monedas(a.monedas)
@@ -1581,6 +1612,8 @@ def cmd_fugas(a):
         try:
             v1, v4 = cargar(m, a.offline, a.dias * 24)
             v1, v4 = cerradas(v1, H1, ahora), cerradas(v4, H4, ahora)
+            if sin_negociacion(v1):
+                raise Error(sin_negociacion(v1))
             f = fugas_de(m)
             for k in ("spread", "comision", "desliz", "swap"):
                 if getattr(a, k) is not None:
@@ -1627,12 +1660,15 @@ def cmd_fugas(a):
                                        "🔴 en el mundo real pierde: no conviene operarla así."))
     if len(res) > 1:
         out += ["", "Moneda a moneda, en el mundo real (todas las fugas menos el límite de cartera):",
-                "| Moneda | Operaciones | Aciertos | R medio | Ideal |", "|---|---|---|---|---|"]
+                "| | Moneda | Operaciones | Aciertos | R medio | Ideal |", "|---|---|---|---|---|---|"]
         for m, x in sorted(res.items(), key=lambda kv: -(resumen(kv[1][0]["swap"]).get("R_medio") or -9)):
             r, i = resumen(x[0]["swap"]), resumen(x[0]["ideal"])
-            out.append("| %s | %d | %s | %s | %s |" % (m, r.get("n", 0), pct(r["acierto"], 0) if r.get("n") else "-",
-                                                      rm(r), rm(i)))
-    supuestos = sorted({(m if m in FUGAS else "cripto", "diferencial %s, comisión %s por lado, deslizamiento %s por lado, "
+            out.append("| %s | %s | %d | %s | %s | %s |" % (
+                marca_real(r), m, r.get("n", 0), pct(r["acierto"], 0) if r.get("n") else "-", rm(r), rm(i)))
+        out.append("🟢 gana (más de +0,02 R) · ⚪ a la par · 🔴 pierde · ⚠️ menos de %d operaciones: pocos datos, "
+                   "no fiable todavía." % MIN_OPS_FIABLE)
+    etiqueta = lambda m: m if m in FUGAS else "acciones" if tipo_de(m) == "accion" else "cripto"
+    supuestos = sorted({(etiqueta(m), "diferencial %s, comisión %s por lado, deslizamiento %s por lado, "
                          "swap %s por noche" % (pct(x[1]["spread"], 3), pct(x[1]["comision"], 3), pct(x[1]["desliz"], 3),
                                                 pct(x[1]["swap"], 3))) for m, x in res.items()})
     out += ["", "Supuestos de costes (cámbialos con --spread, --comision, --desliz y --swap si tu bróker es distinto):"]

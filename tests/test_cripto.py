@@ -549,6 +549,25 @@ class Fugas(unittest.TestCase):
         self.assertLess(dos["R_medio_real"], dos["R_medio"])   # el mundo real resta
         self.assertLessEqual(dos["p_gana_real"], dos["p_gana"])
 
+    def test_marca_del_mundo_real(self):
+        self.assertEqual(cr.marca_real({"n": 100, "R_medio": 0.1}), "🟢")
+        self.assertEqual(cr.marca_real({"n": 100, "R_medio": 0.0}), "⚪")
+        self.assertEqual(cr.marca_real({"n": 100, "R_medio": -0.1}), "🔴")
+        self.assertEqual(cr.marca_real({"n": 10, "R_medio": 0.5}), "⚠️")
+        self.assertEqual(cr.marca_real({"n": 0}), "⚠️")
+
+    def test_par_sin_negociacion_no_evaluable(self):
+        v1 = velas_1h(300, salto=1.0)
+        for b in v1[-200:]:
+            b["o"] = b["h"] = b["l"] = b["c"] = v1[-201]["c"]
+        self.assertGreater(cr.planas(v1), 0.5)
+        r = cr.estado_moneda("LINK", v1, a_4h(v1), v1[-1]["t"] + H1 + 60)
+        self.assertEqual(r["ahora"], "NO EVALUABLE")
+        self.assertIn("casi no se negocia", r["motivo"])
+        self.assertEqual(cr.sin_negociacion(velas_1h(300)), "")
+        self.assertEqual(cr.tipo_de("ATOM"), "cripto")
+        self.assertEqual(cr.MATERIAS["ATOM"]["yahoo"], "ATOM-USD")
+
     def test_fugas_por_activo(self):
         self.assertEqual(cr.fugas_de("BTC")["swap"], 0.0)
         self.assertGreater(cr.fugas_de("ORO")["swap"], 0)
