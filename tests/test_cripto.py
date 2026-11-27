@@ -549,11 +549,78 @@ class Fugas(unittest.TestCase):
         self.assertLess(dos["R_medio_real"], dos["R_medio"])   # el mundo real resta
         self.assertLessEqual(dos["p_gana_real"], dos["p_gana"])
 
+    def test_marca_del_mundo_real(self):
+        self.assertEqual(cr.marca_real({"n": 100, "R_medio": 0.1}), "🟢")
+        self.assertEqual(cr.marca_real({"n": 100, "R_medio": 0.0}), "⚪")
+        self.assertEqual(cr.marca_real({"n": 100, "R_medio": -0.1}), "🔴")
+        self.assertEqual(cr.marca_real({"n": 10, "R_medio": 0.5}), "⚠️")
+        self.assertEqual(cr.marca_real({"n": 0}), "⚠️")
+
+    def test_par_sin_negociacion_no_evaluable(self):
+        v1 = velas_1h(300, salto=1.0)
+        for b in v1[-200:]:
+            b["o"] = b["h"] = b["l"] = b["c"] = v1[-201]["c"]
+        self.assertGreater(cr.planas(v1), 0.5)
+        r = cr.estado_moneda("LINK", v1, a_4h(v1), v1[-1]["t"] + H1 + 60)
+        self.assertEqual(r["ahora"], "NO EVALUABLE")
+        self.assertIn("casi no se negocia", r["motivo"])
+        self.assertEqual(cr.sin_negociacion(velas_1h(300)), "")
+        self.assertEqual(cr.tipo_de("ATOM"), "cripto")
+        self.assertEqual(cr.MATERIAS["ATOM"]["yahoo"], "ATOM-USD")
+
     def test_fugas_por_activo(self):
         self.assertEqual(cr.fugas_de("BTC")["swap"], 0.0)
         self.assertGreater(cr.fugas_de("ORO")["swap"], 0)
         f = cr.fugas_de("EURUSD")
         self.assertAlmostEqual(f["spread"] + 2 * f["desliz"], cr.coste_de("EURUSD"))
+
+
+class ListaDeSeguimiento(unittest.TestCase):
+    def test_nombres_con_usdt_y_pares(self):
+        self.assertEqual(cr._monedas(["BTC/USDT", "FIL/USDT", "dot", "USD/JPY", "AUDUSD", "aapl"]),
+                         ["BTC", "FIL", "DOT", "USDJPY", "AUDUSD", "AAPL"])
+
+    def test_tipos_y_simbolos(self):
+        self.assertEqual(cr.tipo_de("BTC"), "cripto")
+        self.assertEqual(cr.tipo_de("FIL"), "cripto")
+        self.assertEqual(cr.tipo_de("USDJPY"), "divisa")
+        self.assertEqual(cr.tipo_de("TSLA"), "accion")
+        self.assertEqual(cr.tipo_de("ORO"), "metal")
+        self.assertFalse(cr.con_cierres("FIL"))
+        self.assertTrue(cr.con_cierres("AAPL"))
+        self.assertEqual(cr.simbolo_tv("FIL"), "BINANCE:FILUSDT")
+        self.assertEqual(cr.simbolo_tv("AAPL"), "NASDAQ:AAPL")
+        self.assertEqual(cr.simbolo_tv("USDJPY"), "FX:USDJPY")
+
+    def test_yen_con_tres_decimales(self):
+        cr.fijar_precision("USDJPY")
+        try:
+            self.assertEqual(cr.fmt(159.5234), "159,523")
+        finally:
+            cr.fijar_precision(None)
+
+    def test_costes_de_acciones(self):
+        f = cr.fugas_de("AAPL")
+        self.assertEqual(f["swap"], 0.0)
+        self.assertAlmostEqual(f["spread"] + 2 * f["desliz"], cr.coste_de("AAPL"))
+        apertura = 86400 * 20000 + 14 * 3600 + 1800        # 14:30 UTC
+        self.assertEqual(cr.factor_spread(apertura, "AAPL"), 1.5)
+        self.assertEqual(cr.factor_spread(apertura + 3 * H1, "AAPL"), 1.0)
+
+    def test_acciones_dias_cortos_y_fin_de_semana(self):
+        # sesiones de 7 velas a las y media, de lunes a viernes
+        v1, t = [], 1793712600      # 03-11-2026 14:30 UTC (martes)
+        c = 100.0
+        while len(v1) < 7 * 60:
+            d = cr.EPOCH + __import__("datetime").timedelta(seconds=t)
+            if d.weekday() < 5 and (d.hour, d.minute) >= (14, 30) and d.hour < 21:
+                c += 0.1
+                v1.append({"t": t, "o": c - 0.1, "h": c + 0.05, "l": c - 0.2, "c": c, "v": 1000.0})
+            t += H1
+        self.assertGreater(len(cr.diarias_para(v1, "AAPL")), 50)
+        lunes = v1[-1]["t"] + 64 * H1                     # de viernes por la tarde al lunes
+        r = cr.estado_moneda("AAPL", v1, cr.agrupar_4h(v1), lunes)
+        self.assertNotEqual(r["ahora"], "NO EVALUABLE", r.get("motivo"))
 
 
 class FichasYNoticias(unittest.TestCase):

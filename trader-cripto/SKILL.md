@@ -146,10 +146,32 @@ supuestos: si el bróker del usuario (Quantfury) cobra distinto, se cambian con 
 `--comision`, `--desliz` y `--swap`. La IA leyendo patrones de velas no se usa: la regla es
 objetiva y medible.
 
+## Toda la lista de seguimiento
+
+Además de las 10 del script, el oro, la plata y EUR/USD, se pueden estudiar con los mismos
+comandos:
+
+| Tipo | Activos | Datos | Símbolo de las fichas |
+| --- | --- | --- | --- |
+| Cripto en Bitstamp | DOT, UNI, ARB, AVAX, LTC, AAVE, INJ, NEAR (y cualquier par USD de Bitstamp) | Bitstamp, 3 años | BITSTAMP:XXXUSD |
+| Cripto fuera de Bitstamp | FIL, THETA, RUNE, ATOM | Yahoo, unos 2 años | BINANCE:XXXUSDT |
+| Divisas | GBP/USD, USD/JPY (3 decimales), USD/CAD, AUD/USD, NZD/USD | Yahoo, casi 3 años | FX:XXXYYY |
+| Acciones | AAPL, TSLA, MSTR | Yahoo, unos 2 años, solo con la bolsa abierta | NASDAQ:XXX |
+
+Los nombres de Quantfury valen tal cual (BTC/USDT, FIL/USDT, USD/JPY). En acciones las velas
+de 1h empiezan a las y media, un día tiene unas 7 y el diferencial se abre en la primera hora.
+
+Pares que casi no se negocian: si más del 20 % de las velas no tienen ningún movimiento
+(máximo = mínimo), el activo sale NO EVALUABLE con el motivo y `fugas`/`afondo` no lo estudian.
+En Bitstamp, ATOM tenía el 100 % de velas planas, así que ATOM se lee de Yahoo.
+
+En `fugas` con varios activos, cada uno lleva su marca del mundo real: 🟢 gana, ⚪ a la par,
+🔴 pierde, ⚠️ menos de 60 operaciones (pocos datos, no fiable todavía).
+
 ## Costes por activo
 
-Por defecto, ida y vuelta: cripto 0,1 %, oro y plata 0,05 %, EUR/USD 0,02 % (`--coste` lo
-cambia). Con un coste mal puesto, un activo de movimientos pequeños como EUR/USD parece mucho
+Por defecto, ida y vuelta: cripto 0,1 %, oro y plata 0,05 %, EUR/USD, GBP/USD y USD/JPY
+0,02 %, USD/CAD, AUD/USD y NZD/USD 0,025 %, acciones 0,06 % (`--coste` lo cambia). Con un coste mal puesto, un activo de movimientos pequeños como EUR/USD parece mucho
 peor de lo que es.
 
 En `afondo`, ✅ = mejora a la regla en los tres periodos **y gana dinero**; ↑ = mejora pero
