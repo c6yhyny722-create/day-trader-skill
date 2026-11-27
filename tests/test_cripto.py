@@ -517,6 +517,38 @@ class Fugas(unittest.TestCase):
         por = {"A": [op(0, 1, -1), op(3, 1, 1)], "B": [op(0, 1, -1)], "C": [op(2, 1, 1)]}
         self.assertEqual(len(cr.cartera(por)), 2)                 # tras −2R en el día, no abre más
 
+    def test_diferencial_variable_por_hora(self):
+        dia = cr.parse_ahora("2026-11-25 16:00")          # miércoles por la tarde
+        noche = cr.parse_ahora("2026-11-25 03:00")
+        finde = cr.parse_ahora("2026-11-28 16:00")        # sábado
+        self.assertEqual(cr.factor_spread(dia, "BTC"), 1.0)
+        self.assertAlmostEqual(cr.factor_spread(noche, "BTC"), 1.3)
+        self.assertAlmostEqual(cr.factor_spread(finde, "BTC"), 1.5)
+        rollover = 86400 * 20000 + 21 * 3600              # 21:00 UTC
+        self.assertEqual(cr.factor_spread(rollover, "EURUSD"), 3.0)
+        self.assertEqual(cr.factor_spread(dia, "ORO"), 1.0)
+
+    def test_diferencial_variable_cuesta_mas_de_noche(self):
+        v1, s = self._senal()
+        self._sigue(v1, [(s["entrada"], s["entrada"] + 0.01, s["stop"] - 0.01, s["stop"])])
+        fijo = cr.operaciones_reales(v1, [s], fugas={"spread": 0.1})[0]["R"]
+        var = cr.operaciones_reales(v1, [s], fugas={"spread": 0.1}, moneda="BTC", spread_variable=True)[0]["R"]
+        horas = [cr.a_madrid(x).hour for x in (s["cierre_ts"], v1[-1]["t"] + H1)]
+        if any(h < 7 for h in horas):
+            self.assertLess(var, fijo)
+        else:
+            self.assertLessEqual(var, fijo)
+
+    def test_montecarlo_dos_mundos(self):
+        v1 = velas_1h(24 * 30)
+        ideal = cr.simular(v1, 107.0, 106.0, 109.0, v1[-1]["t"] + H1, horas=24, recorridos=300)
+        dos = cr.simular(v1, 107.0, 106.0, 109.0, v1[-1]["t"] + H1, horas=24, recorridos=300,
+                         fugas={"spread": 0.1, "desliz": 0.05, "swap": 0.02}, moneda="BTC")
+        self.assertIsNone(ideal["R_medio_real"])
+        self.assertEqual(dos["R_medio"], ideal["R_medio"])     # los mismos caminos
+        self.assertLess(dos["R_medio_real"], dos["R_medio"])   # el mundo real resta
+        self.assertLessEqual(dos["p_gana_real"], dos["p_gana"])
+
     def test_fugas_por_activo(self):
         self.assertEqual(cr.fugas_de("BTC")["swap"], 0.0)
         self.assertGreater(cr.fugas_de("ORO")["swap"], 0)

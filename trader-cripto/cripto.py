@@ -527,9 +527,15 @@ def pool_horario(v1):
     return pool
 
 
-def simular(v1, entrada, stop, objetivo, inicio_ts, horas=48, recorridos=10000, semilla=19, ventana=1):
+def simular(v1, entrada, stop, objetivo, inicio_ts, horas=48, recorridos=10000, semilla=19, ventana=1,
+            fugas=None, moneda=None):
     """Monte Carlo: reconstruye las próximas `horas` velas tomando, para cada hora del día,
-    una vela real de esa hora (± ventana) de la historia descargada."""
+    una vela real de esa hora (± ventana) de la historia descargada. Con `fugas`, cada
+    recorrido se mide también en el mundo real (diferencial variable por hora, comisión,
+    deslizamiento y swap): los mismos caminos, dos resultados."""
+    f = dict(spread=0.0, comision=0.0, desliz=0.0, swap=0.0)
+    f.update(fugas or {})
+    d = f["desliz"] / 100.0
     largo = stop < entrada
     riesgo = abs(entrada - stop)
     r_obj = abs(objetivo - entrada) / riesgo
@@ -538,9 +544,11 @@ def simular(v1, entrada, stop, objetivo, inicio_ts, horas=48, recorridos=10000, 
         raise Error("hacen falta al menos 20 días de velas de 1h para simular")
     rng = random.Random(semilla)
     h0 = (inicio_ts // H1) % 24
-    res, finales, Rs = {"objetivo": 0, "stop": 0, "ninguno": 0}, [], []
+    res, finales, Rs, Rr = {"objetivo": 0, "stop": 0, "ninguno": 0}, [], [], []
+    e_real = entrada * (1 + d) if largo else entrada * (1 - d)
+    R_real = (e_real - stop) if largo else (stop - e_real)
     for _ in range(recorridos):
-        p, fin = entrada, None
+        p, fin, k_fin = entrada, None, horas - 1
         for k in range(horas):
             h = (h0 + k + rng.randint(-ventana, ventana)) % 24
             cand = pool[h] or pool[(h0 + k) % 24]
@@ -548,21 +556,33 @@ def simular(v1, entrada, stop, objetivo, inicio_ts, horas=48, recorridos=10000, 
             alto, bajo = p * hi, p * lo
             if fin is None:
                 if (bajo <= stop) if largo else (alto >= stop):
-                    fin = "stop"
+                    fin, k_fin = "stop", k
                 elif (alto >= objetivo) if largo else (bajo <= objetivo):
-                    fin = "objetivo"
+                    fin, k_fin = "objetivo", k
             p = p * c
         fin = fin or "ninguno"
         res[fin] += 1
         finales.append(p)
         Rs.append(r_obj if fin == "objetivo" else -1.0 if fin == "stop" else
                   ((p - entrada) if largo else (entrada - p)) / riesgo)
+        if fugas and R_real > 0:
+            salida = (stop * (1 - d) if largo else stop * (1 + d)) if fin == "stop" else \
+                objetivo if fin == "objetivo" else (p * (1 - d) if largo else p * (1 + d))
+            t_out = inicio_ts + (k_fin + 1) * H1
+            r = ((salida - e_real) if largo else (e_real - salida)) / R_real
+            sp = f["spread"] * (factor_spread(inicio_ts, moneda) + factor_spread(t_out, moneda)) / 2
+            r -= (sp + 2 * f["comision"]) / 100.0 * e_real / R_real
+            r -= noches(inicio_ts, t_out) * f["swap"] / 100.0 * e_real / R_real
+            Rr.append(r)
     srt = sorted(finales)
     q = lambda f: srt[min(len(srt) - 1, int(f * len(srt)))]
     n = float(recorridos)
     return {"recorridos": recorridos, "horas": horas, "semilla": semilla, "r_objetivo": r_obj,
             "p_objetivo": res["objetivo"] / n, "p_stop": res["stop"] / n, "p_ninguno": res["ninguno"] / n,
-            "R_medio": statistics.mean(Rs), "mediana": q(0.5), "p5": q(0.05), "p95": q(0.95)}
+            "R_medio": statistics.mean(Rs), "mediana": q(0.5), "p5": q(0.05), "p95": q(0.95),
+            "p_gana": sum(1 for r in Rs if r > 0) / n,
+            "R_medio_real": statistics.mean(Rr) if Rr else None,
+            "p_gana_real": sum(1 for r in Rr if r > 0) / n if Rr else None}
 
 
 def veredicto(mc):
@@ -692,11 +712,26 @@ def fugas_de(moneda):
     return dict(FUGAS.get(moneda, FUGAS_CRIPTO))
 
 
+def factor_spread(ts, moneda=None):
+    """Cuánto se abre el diferencial según la hora (supuesto prudente, editable aquí).
+    Cripto: ×1,5 en fin de semana y ×1,3 de 00:00 a 07:00 (Madrid), con poca liquidez.
+    Oro, plata y divisas: ×3 en el cambio de día de Nueva York (21:00 a 00:00 UTC) y ×1,5 en
+    la sesión asiática (00:00 a 08:00, Madrid). Las noticias fuertes lo abren más y no se
+    pueden prever: por eso los supuestos van por el lado prudente."""
+    m = a_madrid(ts)
+    if moneda and es_materia(moneda):
+        if (ts // H1) % 24 in (21, 22, 23):
+            return 3.0
+        return 1.5 if m.hour < 8 else 1.0
+    fac = 1.5 if m.weekday() >= 5 else 1.0
+    return fac * (1.3 if m.hour < 7 else 1.0)
+
+
 def noches(desde, hasta):
     return max(0, (hasta - ROLLOVER) // 86400 - (desde - ROLLOVER) // 86400)
 
 
-def operaciones_reales(v1, lista, horas=720, fugas=None, siguiente=False):
+def operaciones_reales(v1, lista, horas=720, fugas=None, siguiente=False, moneda=None, spread_variable=False):
     """Como `operaciones`, con la regla tal cual, pero contando las fugas del mundo real:
     diferencial, comisión y deslizamiento; con `siguiente`, la entrada es la apertura de la
     vela que sigue a la señal (la alerta llega al cierre y se entra después) y, si esa
@@ -741,7 +776,9 @@ def operaciones_reales(v1, lista, horas=720, fugas=None, siguiente=False):
             fin, salida = "ninguno", tramo[-1]["c"] * (1 - d if largo else 1 + d)
         t_out = v1[k]["t"] + H1
         res = ((salida - e) if largo else (e - salida)) / R
-        res -= (f["spread"] + 2 * f["comision"]) / 100.0 * e / R
+        sp = f["spread"] * ((factor_spread(t_in, moneda) + factor_spread(t_out, moneda)) / 2
+                            if spread_variable else 1.0)
+        res -= (sp + 2 * f["comision"]) / 100.0 * e / R
         res -= noches(t_in, t_out) * f["swap"] / 100.0 * e / R
         libre_desde = k
         filas.append({"ts": s["cierre_ts"], "entrada_ts": t_in, "salida_ts": t_out, "lado": s["lado"],
@@ -768,7 +805,7 @@ def cartera(por_moneda, max_abiertas=3, tope_diario_R=-2.0):
 
 PASOS_FUGAS = [
     ("ideal", "Backtest ideal (entra al cierre exacto, sin costes)"),
-    ("costes", "+ 01 diferencial y 04 comisión"),
+    ("costes", "+ 01 diferencial (variable por hora) y 04 comisión"),
     ("desliz", "+ 02 deslizamiento"),
     ("retraso", "+ 03 retraso: entra en la vela siguiente y no persigue"),
     ("swap", "+ 05 swap por noche"),
@@ -786,7 +823,8 @@ def fugas_moneda(v1, v4, moneda, horas=720, fugas=None):
         "retraso": dict(spread=f["spread"], comision=f["comision"], desliz=f["desliz"], swap=0),
         "swap": f,
     }
-    return {p: operaciones_reales(v1, lista, horas, pasos[p], siguiente=p in ("retraso", "swap"))
+    return {p: operaciones_reales(v1, lista, horas, pasos[p], siguiente=p in ("retraso", "swap"),
+                                  moneda=moneda, spread_variable=p != "ideal")
             for p, _ in PASOS_FUGAS}
 
 
@@ -1194,7 +1232,8 @@ def cmd_simular(a):
     v1c, v4c = cerradas(v1, H1, ahora), cerradas(v4, H4, ahora)
     entrada, stop, obj, origen = _plan_de(a, v1c, v4c, ahora)
     lado = "COMPRA" if stop < entrada else "VENTA"
-    mc = simular(v1c, entrada, stop, obj, v1c[-1]["t"] + H1, a.horas, a.recorridos, a.semilla)
+    mc = simular(v1c, entrada, stop, obj, v1c[-1]["t"] + H1, a.horas, a.recorridos, a.semilla,
+                 fugas=fugas_de(m), moneda=m)
     hist = historial(v1c, v4c, 720, lado)
     dias = (v1c[-1]["t"] - v1c[0]["t"]) / 86400.0
     out = ["%s %s %s (%s) · entrada %s · stop %s · objetivo %s · próximas %d h" % (
@@ -1207,7 +1246,13 @@ def cmd_simular(a):
         "| Ni uno ni otro en %d h | %s |" % (a.horas, pct(100 * mc["p_ninguno"], 1)), "",
         "R medio: %s · precio a las %d h: mediana %s (5 %%: %s, 95 %%: %s)" % (
             fmt(mc["R_medio"], 3), a.horas, fmt(mc["mediana"]), fmt(mc["p5"]), fmt(mc["p95"])),
-        "Veredicto: " + veredicto(mc), ""]
+        "Veredicto: " + veredicto(mc), "",
+        "Mismos %s recorridos, dos mundos:" % fmt(mc["recorridos"], 0),
+        "| | Mundo ideal | Mundo real (fugas) |", "|---|---|---|",
+        "| R medio | %s | %s |" % (fmt(mc["R_medio"], 3), fmt(mc["R_medio_real"], 3)),
+        "| Recorridos que ganan | %s | %s |" % (pct(100 * mc["p_gana"], 1), pct(100 * (mc["p_gana_real"] or 0), 1)),
+        "El mundo real resta diferencial (variable por hora), comisión, deslizamiento y swap con los "
+        "supuestos del activo (ver `fugas`). El retraso no entra aquí: se simula desde la entrada.", ""]
     if hist:
         n = len(hist)
         out.append("Historia: %d operaciones de %s en zona (sin contar dos veces señales seguidas). Objetivo %d · "
