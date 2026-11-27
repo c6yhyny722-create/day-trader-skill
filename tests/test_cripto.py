@@ -126,6 +126,19 @@ class Regla(unittest.TestCase):
         r = cr.estado_moneda("LINK", v1, v4, cerrada)
         self.assertTrue(r["ahora"].startswith("COMPRA activada"))
 
+    def test_senal_de_horas_antes_sigue_en_zona(self):
+        v1 = velas_1h(300, salto=0.2)
+        v4 = a_4h(v1)
+        s = cr.senal_en(v1, len(v1) - 1, v4)
+        self.assertTrue(s["en_zona"])
+        c = (s["zona"][0] + s["zona"][1]) / 2           # el precio se queda dentro de la zona
+        for k in range(1, 4):
+            v1.append({"t": v1[-1]["t"] + H1, "o": c, "h": c + 0.01, "l": c - 0.01, "c": c, "v": 1.0})
+        r = cr.estado_moneda("LINK", v1, a_4h(v1), v1[-1]["t"] + H1 + 60)
+        self.assertTrue(r["ahora"].startswith("COMPRA en zona (señal de las"), r["ahora"])
+        o = cr.oportunidad(dict(r, atr=1.0), None)
+        self.assertEqual(o["orden"][0], 0)                # cuenta como activa en el ranking
+
     def test_sin_datos_no_evaluable(self):
         r = cr.estado_moneda("LINK", velas_1h(10), [], T0 + 10 * H1)
         self.assertEqual(r["ahora"], "NO EVALUABLE")
