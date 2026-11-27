@@ -19,6 +19,12 @@ equivale en cripto. Solo análisis y simulación: ninguna fila envía órdenes.
 | trader-analyst | Igual (SEC EDGAR); datos de símbolo de TradingView como apoyo | No aplica (no hay 10-Q); se sustituye por noticias y calendario | `mcp-tv-get-symbol-data` |
 | trader-pelosi | Igual | No aplica | ninguna |
 
+## Sin TradingView: `trader-cripto`
+
+Cuando el cupo de TradingView se agota (o en tareas programadas sin conector), la skill
+`trader-cripto` hace lo mismo con velas públicas de Bitstamp: escáner de las 10 monedas,
+señal con zona e invalidación, 10.000 recorridos, tamaño, riesgo, fichas y noticias.
+
 ## Cómo pasar velas de TradingView a las skills de acciones
 
 ```bash
