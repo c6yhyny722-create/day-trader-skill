@@ -10,8 +10,8 @@ strategy("Video Claude · plantilla backtest", shorttitle="Video Claude BT", ove
 
 // ---------- Periodo (dos ventanas: referencia y contraste) ----------
 GP = "Periodo"
-desde = input.time(timestamp("2024-01-01T00:00:00Z"), "Desde", group=GP)
-hasta = input.time(timestamp("2026-11-26T00:00:00Z"), "Hasta", group=GP)
+desde = input.time(timestamp("01 Jan 2024 00:00 +0000"), "Desde", group=GP)
+hasta = input.time(timestamp("26 Nov 2026 00:00 +0000"), "Hasta", group=GP)
 enPeriodo = time >= desde and time < hasta
 
 // ---------- Dirección ----------
@@ -47,10 +47,16 @@ rObj     = input.float(2.0, "Objetivo en R (0 = sin objetivo)", minval=0.0, step
 salCruce = input.bool(true, "Salir también con el cruce contrario", group=GS)
 
 // ---------- Cálculos ----------
-ma(src, n) => tipoMA == "EMA" ? ta.ema(src, n) : ta.sma(src, n)
-mRap = ma(close, maRap)
-mLen = ma(close, maLen)
+esEMA = tipoMA == "EMA"
+emaRap = ta.ema(close, maRap), smaRap = ta.sma(close, maRap)
+emaLen = ta.ema(close, maLen), smaLen = ta.sma(close, maLen)
+mRap = esEMA ? emaRap : smaRap
+mLen = esEMA ? emaLen : smaLen
+cruceArriba = ta.crossover(mRap, mLen)
+cruceAbajo  = ta.crossunder(mRap, mLen)
 rsi  = ta.rsi(close, rsiLen)
+rsiSube = ta.crossover(rsi, rsiBajo)
+rsiBaja = ta.crossunder(rsi, rsiAlto)
 hh   = ta.highest(high, nBrk)[1]
 ll   = ta.lowest(low, nBrk)[1]
 atr  = ta.atr(atrLen)
@@ -61,13 +67,13 @@ tendOK_L = not usaTend or close > tend
 tendOK_S = not usaTend or close < tend
 
 sigL = switch tipoEnt
-    "Cruce de medias"     => ta.crossover(mRap, mLen)
+    "Cruce de medias"     => cruceArriba
     "Ruptura de N velas"  => close > hh
-    "RSI sale de extremo" => ta.crossover(rsi, rsiBajo)
+    "RSI sale de extremo" => rsiSube
 sigS = switch tipoEnt
-    "Cruce de medias"     => ta.crossunder(mRap, mLen)
+    "Cruce de medias"     => cruceAbajo
     "Ruptura de N velas"  => close < ll
-    "RSI sale de extremo" => ta.crossunder(rsi, rsiAlto)
+    "RSI sale de extremo" => rsiBaja
 
 stopDe(bool largo) =>
     switch tipoStop
@@ -90,9 +96,9 @@ if enPeriodo and barstate.isconfirmed and plano
         strategy.exit("S-sal", "S", stop=stopS, limit=rObj > 0 ? close - rObj * R : na)
 
 if salCruce and tipoEnt == "Cruce de medias"
-    if strategy.position_size > 0 and ta.crossunder(mRap, mLen)
+    if strategy.position_size > 0 and cruceAbajo
         strategy.close("L", comment="Cruce contrario")
-    if strategy.position_size < 0 and ta.crossover(mRap, mLen)
+    if strategy.position_size < 0 and cruceArriba
         strategy.close("S", comment="Cruce contrario")
 
 if not enPeriodo and strategy.position_size != 0

@@ -5,11 +5,12 @@ Solo simulación: nada aquí envía órdenes.
 ## Estado (26-11-2026)
 
 - [x] Plantilla Pine v6 de backtest (`estrategia.pine`) con módulos de entrada, filtro, stop, objetivo,
-      comisión, deslizamiento y periodo. **Sin validar en TradingView** (cupo diario agotado).
+      comisión, deslizamiento y periodo. Compilada y guardada en TradingView el 27-11-2026:
+      `USER;d377b87c07f64ceeaec1d2ed05a878ee` («Video Claude · plantilla backtest», versión 1.0).
 - [x] Ficha de reglas (`FICHA.md`) para rellenar.
 - [ ] Reglas del vídeo: faltan. Pegar la transcripción de YouTube («Ver más» → «Mostrar transcripción»)
       o capturas de las reglas / del código / del probador de estrategias.
-- [ ] Validar y guardar el script en TradingView.
+- [x] Validar y guardar el script en TradingView.
 - [ ] Backtests (abajo).
 
 Los valores por defecto de la plantilla (cruce EMA 9/21 con filtro EMA 200, stop 2 ATR, objetivo 2R)
