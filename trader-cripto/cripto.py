@@ -1562,11 +1562,15 @@ def cmd_fugas(a):
         out.append("| + 06 límite de cartera: %d a la vez y −%s %% al día | %d | %s | %s | %s | %s |" % (
             a.max_abiertas, fmt(a.tope_diario, 0), r.get("n", 0), pct(r["acierto"], 0) if r.get("n") else "-",
             rm(r), fac(r), pct(r["R_total"], 1) if r.get("n") else "-"))
-    ideal, real = filas["ideal"], filas.get("cartera") or filas["swap"]
+    ideal, fugado, real = filas["ideal"], filas["swap"], filas.get("cartera") or filas["swap"]
     out.append("")
+    if ideal.get("n") and fugado.get("n"):
+        out.append("Las fugas 01 a 05 se comen %s R por operación (de %s a %s)." % (
+            fmt(ideal["R_medio"] - fugado["R_medio"], 2), rm(ideal), rm(fugado)))
+    if filas.get("cartera", {}).get("n"):
+        out.append("El límite de cartera (06) deja %d de %d operaciones y el R medio queda en %s: frena los días "
+                   "malos, pero también deja pasar oportunidades." % (real["n"], fugado["n"], rm(real)))
     if ideal.get("n") and real.get("n"):
-        out.append("Las fugas se comen %s R por operación (de %s a %s)." % (
-            fmt(ideal["R_medio"] - real["R_medio"], 2), rm(ideal), rm(real)))
         out.append("Veredicto: %s" % ("🟢 la regla sigue ganando en el mundo real." if real["R_medio"] > 0.02 else
                                        "⚪ en el mundo real queda a la par: no da ventaja." if real["R_medio"] > -0.02 else
                                        "🔴 en el mundo real pierde: no conviene operarla así."))
