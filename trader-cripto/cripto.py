@@ -379,8 +379,12 @@ def estado_moneda(moneda, v1, v4, ahora, vigencia=24):
     if ultima:
         ultima["seguimiento"] = seguir(ultima, v1)
         ultima["nota_stop"] = nota_stop(ultima["R"], atr(v1)[ultima["j"]])
+    seg = (ultima or {}).get("seguimiento") or {}
     if ultima and ultima["j"] == len(v1) - 1:
         res["ahora"] = "%s activada%s" % (ultima["lado"], "" if ultima["en_zona"] else " (fuera de zona)")
+    elif ultima and ultima["en_zona"] and seg.get("estado") == "abierta" and seg.get("en_zona"):
+        # la señal saltó horas antes, no ha tocado stop ni objetivo y el precio sigue en la zona
+        res["ahora"] = "%s en zona (señal de las %s)" % (ultima["lado"], hora(ultima["cierre_ts"])[-5:])
     else:
         res["ahora"] = "ESPERAR"
     return res
