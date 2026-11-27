@@ -129,6 +129,15 @@ resultado paso a paso, de «backtest ideal» a «mundo real», con las 6 fugas:
 | 05 swap | Coste por cada noche abierta (cruce de las 17:00 de Nueva York) |
 | 06 exceso de operaciones | Con varias monedas: como mucho 3 a la vez y, tras perder el 2 % en el día, no abre más |
 
+El diferencial no es fijo: se abre según la hora (supuesto prudente). En cripto, ×1,5 en fin
+de semana y ×1,3 de 00:00 a 07:00 (Madrid). En oro, plata y divisas, ×3 en el cambio de día de
+Nueva York (21:00 a 00:00 UTC) y ×1,5 en la sesión asiática. Las noticias fuertes lo abren
+más y no se pueden prever.
+
+`simular` también enseña los dos mundos: los mismos 10.000 recorridos, con el R medio y los
+recorridos que ganan en el mundo ideal y en el real (diferencial variable, comisión,
+deslizamiento y swap; el retraso no, porque la simulación parte de la entrada).
+
 Termina con un veredicto (🟢 gana / ⚪ a la par / 🔴 pierde en el mundo real), la tabla moneda a
 moneda y los supuestos de costes usados. Supuestos por defecto: cripto diferencial 0,08 %,
 deslizamiento 0,02 % por lado, sin comisión ni swap (sin apalancamiento); oro y plata 0,03 %,
