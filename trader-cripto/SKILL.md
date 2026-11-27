@@ -35,6 +35,7 @@ para confirmar, horas de Madrid**. Es para estudio e investigación con capital 
 | trader-timemachine | 10.000 recorridos de las próximas horas y cada señal pasada | `simular MONEDA` |
 | (nuevo) | Compara stops y objetivos en dos periodos, con costes | `estudiar` |
 | (nuevo) | Estudio a fondo de una moneda con 3 años: diario, niveles, horas, regla y filtros | `afondo MONEDA` |
+| (nuevo) | Las 10 monedas ordenadas por oportunidad (señal activa, cercanía al disparo, ventaja en 3 años) | `oportunidades` |
 | trader-budget | Unidades fraccionarias para un % de riesgo, enseñando la cuenta | `tamano` |
 | trader-risk | PASA / BLOQUEA con los límites del método | `riesgo` |
 | trader-alerts | Último precio de Bitstamp y ficha de alerta propuesta | `precio`, `ficha` |
@@ -64,6 +65,7 @@ python3 "${CLAUDE_SKILL_DIR}/cripto.py" senal LINK               # señal, plan 
 python3 "${CLAUDE_SKILL_DIR}/cripto.py" simular LINK             # 10.000 recorridos, 48 h
 python3 "${CLAUDE_SKILL_DIR}/cripto.py" simular LINK --entrada 9.694 --stop 9.107 --horas 24
 python3 "${CLAUDE_SKILL_DIR}/cripto.py" afondo BTC               # 3 años de BTC: lo más fiable
+python3 "${CLAUDE_SKILL_DIR}/cripto.py" oportunidades            # ranking de las 10 (unos 4 minutos)
 python3 "${CLAUDE_SKILL_DIR}/cripto.py" estudiar                 # las 10 monedas, 83 días, coste 0,1 %
 python3 "${CLAUDE_SKILL_DIR}/cripto.py" estudiar LINK SOL --lado compra --coste 0.2
 python3 "${CLAUDE_SKILL_DIR}/cripto.py" tamano --capital 10000 --riesgo 0.5 --entrada 9.694 --stop 9.107
