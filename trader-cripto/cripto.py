@@ -219,6 +219,20 @@ def cerradas(velas, paso, ahora):
     return [b for b in velas if b["t"] + paso <= ahora]
 
 
+def revisar_velas(velas, paso, ultimas):
+    """Problemas en las `ultimas` velas: huecos de tiempo o velas imposibles (máximo por
+    debajo del mínimo, apertura o cierre fuera del rango). Lista vacía si todo cuadra."""
+    tramo = velas[-ultimas:]
+    out = []
+    for a, b in zip(tramo, tramo[1:]):
+        if b["t"] - a["t"] != paso:
+            out.append("falta la vela de las %s" % hora(a["t"] + paso))
+    for b in tramo:
+        if not (b["l"] <= min(b["o"], b["c"]) and max(b["o"], b["c"]) <= b["h"]) or b["c"] <= 0:
+            out.append("vela imposible a las %s" % hora(b["t"]))
+    return out
+
+
 # ---------------------------------------------------------------- indicadores
 
 def ema(xs, n):
@@ -338,6 +352,10 @@ def estado_moneda(moneda, v1, v4, ahora, vigencia=24):
     if retraso > 24 * 3600:
         res.update(ahora="NO EVALUABLE", motivo="el último dato tiene más de 24 h de retraso")
         return res
+    problemas = revisar_velas(v1, H1, vigencia + N_RUPTURA + 1) + revisar_velas(v4, H4, N_EMA)
+    if problemas:
+        res.update(ahora="NO EVALUABLE", motivo="datos dudosos: " + "; ".join(problemas[:3]))
+        return res
     # condiciones para la vela siguiente
     # la vela siguiente toma su contexto de la última vela de 4h ya cerrada
     c4, e4 = v4[-1]["c"], ema([b["c"] for b in v4], N_EMA)[-1]
@@ -348,7 +366,7 @@ def estado_moneda(moneda, v1, v4, ahora, vigencia=24):
                compra_si=hh if alcista else None, venta_si=None if alcista else ll,
                stop_compra=min(x["l"] for x in v1[-N_STOP + 1:]),
                stop_venta=max(x["h"] for x in v1[-N_STOP + 1:]),
-               indicadores=indicadores(v1))
+               indicadores=indicadores(v1), atr=atr(v1)[-1])
     # última señal dentro de la vigencia
     ultima = None
     for j in range(len(v1) - 1, max(N_RUPTURA - 1, len(v1) - 1 - vigencia), -1):
@@ -359,6 +377,7 @@ def estado_moneda(moneda, v1, v4, ahora, vigencia=24):
     res["ultima_senal"] = ultima
     if ultima:
         ultima["seguimiento"] = seguir(ultima, v1)
+        ultima["nota_stop"] = nota_stop(ultima["R"], atr(v1)[ultima["j"]])
     if ultima and ultima["j"] == len(v1) - 1:
         res["ahora"] = "%s activada%s" % (ultima["lado"], "" if ultima["en_zona"] else " (fuera de zona)")
     else:
@@ -367,6 +386,20 @@ def estado_moneda(moneda, v1, v4, ahora, vigencia=24):
 
 
 ICONO = {"COMPRA": "🟢", "VENTA": "🔴"}
+
+
+def nota_stop(R, a):
+    """Distancia del stop en ATR de 1h y aviso si está dentro del ruido o muy lejos."""
+    if not a:
+        return ""
+    k = R / a
+    if k < 1.0:
+        aviso = ": muy cerca, el movimiento normal de una hora puede tocarlo"
+    elif k > 4.0:
+        aviso = ": muy lejos, la operación sale pequeña"
+    else:
+        aviso = ""
+    return "stop a %s ATR%s" % (fmt(k, 1), aviso)
 
 
 def etiqueta_ahora(ahora):
@@ -448,30 +481,108 @@ def veredicto(mc):
                 cab, fmt(mc["r_objetivo"], 1), pct(100 * empate, 0), pct(100 * cuota, 0)))
 
 
-def historial(v1, v4, horas=48, lado=None):
-    """Cada señal pasada de la regla en los datos y cómo acabó en las `horas` siguientes."""
-    filas = []
+def atr(v1, n=14):
+    """ATR de Wilder de cada vela (None mientras no hay n velas)."""
+    tr = [v1[0]["h"] - v1[0]["l"]] + [max(b["h"] - b["l"], abs(b["h"] - a["c"]), abs(b["l"] - a["c"]))
+                                      for a, b in zip(v1, v1[1:])]
+    out, r = [], None
+    for i, x in enumerate(tr):
+        if i + 1 < n:
+            out.append(None)
+            continue
+        r = sum(tr[:n]) / n if r is None else (r * (n - 1) + x) / n
+        out.append(r)
+    return out
+
+
+# Variantes de stop que se comparan en `estudiar`. "regla" es la del script y la que se usa.
+VARIANTES_STOP = [
+    ("regla", "mínimo/máximo de 10 velas (la regla)"),
+    ("colchon", "regla + 0,25 ATR de colchón"),
+    ("atr15", "1,5 ATR desde la entrada"),
+    ("min20", "mínimo/máximo de 20 velas"),
+]
+
+
+def stop_variante(modo, s, v1, atrs):
+    j, largo, e = s["j"], s["lado"] == "COMPRA", s["entrada"]
+    a = atrs[j]
+    if modo == "regla":
+        return s["stop"]
+    if a is None:
+        return None
+    if modo == "colchon":
+        return s["stop"] - 0.25 * a if largo else s["stop"] + 0.25 * a
+    if modo == "atr15":
+        return e - 1.5 * a if largo else e + 1.5 * a
+    if modo == "min20":
+        tramo = v1[max(0, j - 19):j + 1]
+        return min(x["l"] for x in tramo) if largo else max(x["h"] for x in tramo)
+    raise Error("variante de stop desconocida: %s" % modo)
+
+
+def senales(v1, v4, lado=None, solo_zona=True):
+    out = []
     for j in range(N_RUPTURA, len(v1)):
         s = senal_en(v1, j, v4)
-        if not s or (lado and s["lado"] != lado) or not s["en_zona"]:
+        if s and (not lado or s["lado"] == lado) and (s["en_zona"] or not solo_zona):
+            out.append(s)
+    return out
+
+
+def operaciones(v1, lista, horas=48, stop_modo="regla", obj_r=OBJETIVO_R, coste_pct=0.0, atrs=None):
+    """Cada señal como una operación, sin solaparse: mientras una sigue abierta no se abre
+    otra en la misma moneda (las señales seguidas no se cuentan varias veces). Entrada al
+    cierre de la vela de la señal; sale en el stop, en el objetivo o al pasar `horas`.
+    Si una vela toca stop y objetivo, cuenta el stop. El coste (comisión + diferencial, en %
+    ida y vuelta) se descuenta en R."""
+    atrs = atrs or atr(v1)
+    filas, libre_desde = [], -1
+    for s in lista:
+        j = s["j"]
+        if j <= libre_desde:
             continue
-        largo = s["lado"] == "COMPRA"
-        fin, R = None, None
+        largo, e = s["lado"] == "COMPRA", s["entrada"]
+        stop = stop_variante(stop_modo, s, v1, atrs)
+        if stop is None or (largo and stop >= e) or (not largo and stop <= e):
+            continue
+        R = abs(e - stop)
+        obj = e + obj_r * R if largo else e - obj_r * R
         tramo = v1[j + 1:j + 1 + horas]
-        for b in tramo:
-            if (b["l"] <= s["stop"]) if largo else (b["h"] >= s["stop"]):
-                fin, R = "stop", -1.0
+        if len(tramo) < horas and not any(
+                ((b["l"] <= stop or b["h"] >= obj) if largo else (b["h"] >= stop or b["l"] <= obj)) for b in tramo):
+            continue  # aún no ha terminado: no se cuenta
+        fin, res, k = None, None, j + len(tramo)
+        for n, b in enumerate(tramo):
+            if (b["l"] <= stop) if largo else (b["h"] >= stop):
+                fin, res, k = "stop", -1.0, j + 1 + n
                 break
-            if (b["h"] >= s["objetivo"]) if largo else (b["l"] <= s["objetivo"]):
-                fin, R = "objetivo", OBJETIVO_R
+            if (b["h"] >= obj) if largo else (b["l"] <= obj):
+                fin, res, k = "objetivo", obj_r, j + 1 + n
                 break
         if fin is None:
-            if len(tramo) < horas:
-                continue  # aún no han pasado las horas: no se cuenta
             p = tramo[-1]["c"]
-            fin, R = "ninguno", ((p - s["entrada"]) if largo else (s["entrada"] - p)) / s["R"]
-        filas.append({"ts": s["cierre_ts"], "lado": s["lado"], "fin": fin, "R": R})
+            fin, res = "ninguno", ((p - e) if largo else (e - p)) / R
+        res -= coste_pct / 100.0 * e / R
+        libre_desde = k
+        filas.append({"ts": s["cierre_ts"], "lado": s["lado"], "fin": fin, "R": res, "riesgo_pct": 100 * R / e})
     return filas
+
+
+def historial(v1, v4, horas=48, lado=None):
+    """Operaciones pasadas de la regla tal cual (sin costes)."""
+    return operaciones(v1, senales(v1, v4, lado), horas)
+
+
+def resumen(filas):
+    if not filas:
+        return {"n": 0}
+    rs = [f["R"] for f in filas]
+    gan, per = sum(r for r in rs if r > 0), -sum(r for r in rs if r < 0)
+    return {"n": len(rs), "acierto": 100.0 * sum(1 for r in rs if r > 0) / len(rs),
+            "R_medio": sum(rs) / len(rs), "R_total": sum(rs),
+            "factor": gan / per if per > 0 else None,
+            "objetivo": sum(f["fin"] == "objetivo" for f in filas), "stop": sum(f["fin"] == "stop" for f in filas)}
 
 
 # ---------------------------------------------------------------- tamaño y riesgo
@@ -594,7 +705,8 @@ def texto_senal(s):
             "invalidación %s · objetivo 2R %s%s" % (
                 ICONO[s["lado"]], s["lado"], hora(s["cierre_ts"]), fmt(s["entrada"]), fmt(s["zona"][0]),
                 fmt(s["zona"][1]), "en zona" if s["en_zona"] else "fuera de zona", fmt(s["stop"]),
-                fmt(s["objetivo"]), (" · ahora: " + ahora) if ahora else ""))
+                fmt(s["objetivo"]), (" · " + s["nota_stop"]) if s.get("nota_stop") else "") +
+            ((" · ahora: " + ahora) if ahora else ""))
 
 
 def informe(resultados):
@@ -661,16 +773,18 @@ def cmd_senal(a):
         if st < r["compra_si"]:
             R = r["compra_si"] - st
             print("\nPlan si salta: entrada %s · invalidación %s (mínimo de las 10 últimas velas) · R %s · "
-                  "objetivo 2R %s · zona hasta %s. El stop se recalcula con las velas de ese momento." % (
-                      fmt(r["compra_si"]), fmt(st), fmt(R), fmt(r["compra_si"] + 2 * R), fmt(r["compra_si"] + 0.5 * R)))
+                  "objetivo 2R %s · zona hasta %s · %s. El stop se recalcula con las velas de ese momento." % (
+                      fmt(r["compra_si"]), fmt(st), fmt(R), fmt(r["compra_si"] + 2 * R), fmt(r["compra_si"] + 0.5 * R),
+                      nota_stop(R, r.get("atr"))))
     if r.get("venta_si") is not None:
         print(ficha(1, m, "VENTA", r["venta_si"], "1h", "Cierre por debajo", caduca, "revisar volumen"))
         st = r["stop_venta"]
         if st > r["venta_si"]:
             R = st - r["venta_si"]
             print("\nPlan si salta: entrada %s · invalidación %s (máximo de las 10 últimas velas) · R %s · "
-                  "objetivo 2R %s · zona hasta %s." % (
-                      fmt(r["venta_si"]), fmt(st), fmt(R), fmt(r["venta_si"] - 2 * R), fmt(r["venta_si"] - 0.5 * R)))
+                  "objetivo 2R %s · zona hasta %s · %s." % (
+                      fmt(r["venta_si"]), fmt(st), fmt(R), fmt(r["venta_si"] - 2 * R), fmt(r["venta_si"] - 0.5 * R),
+                      nota_stop(R, r.get("atr"))))
     cx = r["contexto"]
     print("")
     print(ficha(2, m, "ESPERAR", cx["ema50"], "4h", "Cierre por debajo" if cx["alcista"] else "Cierre por encima",
@@ -721,16 +835,115 @@ def cmd_simular(a):
         "Veredicto: " + veredicto(mc), ""]
     if hist:
         n = len(hist)
-        out.append("Historia: %d señales de %s en zona en los datos. Objetivo %d · stop %d · ni uno ni otro %d · "
-                   "R medio %s." % (n, lado, sum(h["fin"] == "objetivo" for h in hist),
+        out.append("Historia: %d operaciones de %s en zona (sin contar dos veces señales seguidas). Objetivo %d · "
+                   "stop %d · ni uno ni otro %d · R medio %s, sin costes." % (n, lado, sum(h["fin"] == "objetivo" for h in hist),
                                     sum(h["fin"] == "stop" for h in hist), sum(h["fin"] == "ninguno" for h in hist),
                                     fmt(statistics.mean(h["R"] for h in hist), 2)))
         if n < 20:
-            out.append("Son pocas señales: el resultado puede deberse a la suerte.")
+            out.append("Son pocas operaciones: el resultado puede deberse a la suerte.")
     else:
         out.append("Historia: ninguna señal de %s en zona en los datos descargados." % lado)
     out += ["", "Una simulación usa el pasado: no garantiza lo que pasará.", CIERRE]
     print(json.dumps({"montecarlo": mc, "historia": hist}, ensure_ascii=False, indent=1) if a.json else "\n".join(out))
+    return 0
+
+
+OBJETIVOS_R = (1.5, 2.0, 3.0)
+
+
+def estudio(datos, horas=48, coste_pct=0.1, lado=None):
+    """datos = {moneda: (v1, v4)} cerradas. Compara cada stop × objetivo en dos mitades del
+    periodo. Devuelve filas por variante (todas las monedas juntas) y por moneda (la regla)."""
+    t_ini = max(v1[0]["t"] for v1, _ in datos.values())
+    t_fin = min(v1[-1]["t"] for v1, _ in datos.values())
+    corte = t_ini + (t_fin - t_ini) // 2
+    filas, por_moneda = [], {}
+    cache = {m: (senales(v1, v4, lado), atr(v1)) for m, (v1, v4) in datos.items()}
+    for modo, texto in VARIANTES_STOP:
+        for r in OBJETIVOS_R:
+            p1, p2 = [], []
+            for m, (v1, v4) in datos.items():
+                lista, atrs = cache[m]
+                ops = [o for o in operaciones(v1, lista, horas, modo, r, coste_pct, atrs) if o["ts"] >= t_ini]
+                p1 += [o for o in ops if o["ts"] < corte]
+                p2 += [o for o in ops if o["ts"] >= corte]
+                if modo == "regla" and r == OBJETIVO_R:
+                    por_moneda[m] = resumen(ops)
+            filas.append({"stop": modo, "texto": texto, "objetivo_R": r, "p1": resumen(p1), "p2": resumen(p2),
+                          "total": resumen(p1 + p2)})
+    return {"desde": t_ini, "corte": corte, "hasta": t_fin, "filas": filas, "por_moneda": por_moneda,
+            "coste_pct": coste_pct, "horas": horas}
+
+
+def conclusion(est, min_ops=30, margen=0.05):
+    """Solo propone cambiar la regla si una variante gana en LOS DOS periodos, con margen y
+    con operaciones suficientes en cada uno. Si no, la regla se queda como está."""
+    base = [f for f in est["filas"] if f["stop"] == "regla" and f["objetivo_R"] == OBJETIVO_R][0]
+    mejores = []
+    for f in est["filas"]:
+        if f is base or f["p1"]["n"] < min_ops or f["p2"]["n"] < min_ops:
+            continue
+        if base["p1"]["n"] == 0 or base["p2"]["n"] == 0:
+            continue
+        if (f["p1"]["R_medio"] > base["p1"]["R_medio"] + margen and
+                f["p2"]["R_medio"] > base["p2"]["R_medio"] + margen):
+            mejores.append(f)
+    mejores.sort(key=lambda f: -min(f["p1"]["R_medio"], f["p2"]["R_medio"]))
+    return base, mejores
+
+
+def cmd_estudiar(a):
+    ahora = parse_ahora(a.ahora)
+    datos, faltan = {}, []
+    for m in _monedas(a.monedas):
+        try:
+            v1, v4 = cargar(m, a.offline, a.horas_datos)
+            datos[m] = (cerradas(v1, H1, ahora), cerradas(v4, H4, ahora))
+        except Error as e:
+            faltan.append("%s (%s)" % (m, e))
+    if not datos:
+        raise Error("no hay datos de ninguna moneda")
+    est = estudio(datos, a.horas, a.coste, a.lado.upper() if a.lado else None)
+    if a.json:
+        print(json.dumps(est, ensure_ascii=False, indent=1))
+        return 0
+    rm = lambda r: fmt(r["R_medio"], 2) if r.get("n") else "sin datos"
+    out = ["Estudio de la regla «ruptura 20 + contexto 4h» · %d monedas · %s a %s (Madrid)" % (
+        len(datos), hora(est["desde"]), hora(est["hasta"])),
+        "Periodo 1: hasta %s · periodo 2: desde %s · coste %s ida y vuelta · máximo %d h por operación" % (
+            hora(est["corte"]), hora(est["corte"]), pct(est["coste_pct"]), est["horas"]),
+        "Operaciones sin solaparse: mientras una sigue abierta no se cuenta otra en la misma moneda.", "",
+        "| Stop | Objetivo | Operaciones | Aciertos | R medio P1 | R medio P2 | R medio | Factor |",
+        "|---|---|---|---|---|---|---|---|"]
+    for f in est["filas"]:
+        t = f["total"]
+        out.append("| %s | %sR | %d | %s | %s | %s | %s | %s |" % (
+            f["texto"], fmt(f["objetivo_R"], 1), t.get("n", 0),
+            pct(t["acierto"], 0) if t.get("n") else "-", rm(f["p1"]), rm(f["p2"]), rm(t),
+            fmt(t["factor"], 2) if t.get("factor") is not None else "-"))
+    out += ["", "La regla, moneda a moneda (stop de 10 velas, objetivo 2R, con costes):",
+            "| Moneda | Operaciones | Aciertos | R medio | R total |", "|---|---|---|---|---|"]
+    for m, r in sorted(est["por_moneda"].items(), key=lambda x: -(x[1].get("R_medio") or -9)):
+        out.append("| %s | %d | %s | %s | %s |" % (m, r.get("n", 0), pct(r["acierto"], 0) if r.get("n") else "-",
+                                                   rm(r), fmt(r["R_total"], 1) if r.get("n") else "-"))
+    base, mejores = conclusion(est)
+    out.append("")
+    if mejores:
+        f = mejores[0]
+        out.append("Conclusión: «%s» con objetivo %sR gana a la regla en los dos periodos (%s y %s R frente a %s y %s). "
+                   "Es una PROPUESTA: la regla no se cambia sin que lo decidas tú, y conviene volver a "
+                   "comprobarlo con datos nuevos antes de usarla." % (
+                       f["texto"], fmt(f["objetivo_R"], 1), rm(f["p1"]), rm(f["p2"]), rm(base["p1"]), rm(base["p2"])))
+    else:
+        out.append("Conclusión: ninguna variante gana a la regla en los dos periodos con margen suficiente. "
+                   "Lo prudente es no tocar el stop ni el objetivo: lo que mejora en un periodo y no en el otro "
+                   "suele ser casualidad.")
+    if base["total"].get("n") and base["total"]["R_medio"] < 0:
+        out.append("Aviso: la regla tal cual pierde de media en este periodo (%s R por operación con costes)." % rm(base["total"]))
+    for x in faltan:
+        out.append("Sin datos de " + x)
+    out += ["", "Un estudio del pasado no garantiza el futuro.", CIERRE]
+    print("\n".join(out))
     return 0
 
 
@@ -849,6 +1062,16 @@ def main(argv=None):
     s.add_argument("--json", action="store_true")
     comun(s)
     s.set_defaults(fn=cmd_simular)
+
+    s = sub.add_parser("estudiar", help="compara stops y objetivos en dos periodos")
+    s.add_argument("monedas", nargs="*")
+    s.add_argument("--horas", type=int, default=48, help="horas máximas por operación (48)")
+    s.add_argument("--horas-datos", type=int, default=2000)
+    s.add_argument("--coste", type=float, default=0.1, help="%% de coste ida y vuelta (0,1)")
+    s.add_argument("--lado", choices=["compra", "venta"])
+    s.add_argument("--json", action="store_true")
+    comun(s)
+    s.set_defaults(fn=cmd_estudiar)
 
     s = sub.add_parser("tamano", help="unidades para un % de riesgo")
     s.add_argument("--capital", type=float, required=True)

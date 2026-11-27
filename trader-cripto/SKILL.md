@@ -33,6 +33,7 @@ para confirmar, horas de Madrid**. Es para estudio e investigación con capital 
 | trader-scanner | Las 10 monedas del script, con estado y niveles | `escanear` |
 | trader-entry + trader-exit | Señal de la regla, zona de entrada, invalidación y objetivo 2R | `senal MONEDA` |
 | trader-timemachine | 10.000 recorridos de las próximas horas y cada señal pasada | `simular MONEDA` |
+| (nuevo) | Compara stops y objetivos en dos periodos, con costes | `estudiar` |
 | trader-budget | Unidades fraccionarias para un % de riesgo, enseñando la cuenta | `tamano` |
 | trader-risk | PASA / BLOQUEA con los límites del método | `riesgo` |
 | trader-alerts | Último precio de Bitstamp y ficha de alerta propuesta | `precio`, `ficha` |
@@ -61,6 +62,8 @@ python3 "${CLAUDE_SKILL_DIR}/cripto.py" escanear LINK BTC        # solo esas
 python3 "${CLAUDE_SKILL_DIR}/cripto.py" senal LINK               # señal, plan y fichas
 python3 "${CLAUDE_SKILL_DIR}/cripto.py" simular LINK             # 10.000 recorridos, 48 h
 python3 "${CLAUDE_SKILL_DIR}/cripto.py" simular LINK --entrada 9.694 --stop 9.107 --horas 24
+python3 "${CLAUDE_SKILL_DIR}/cripto.py" estudiar                 # las 10 monedas, 83 días, coste 0,1 %
+python3 "${CLAUDE_SKILL_DIR}/cripto.py" estudiar LINK SOL --lado compra --coste 0.2
 python3 "${CLAUDE_SKILL_DIR}/cripto.py" tamano --capital 10000 --riesgo 0.5 --entrada 9.694 --stop 9.107
 python3 "${CLAUDE_SKILL_DIR}/cripto.py" riesgo --capital 10000 --riesgo 1 --entrada 9.694 --stop 9.107 \
     --abiertas 1 --perdida-hoy 0.5
@@ -73,6 +76,36 @@ python3 "${CLAUDE_SKILL_DIR}/cripto.py" noticias BTC ETH --horas 12
 - `--offline CARPETA` lee `linkusd-1h.json` y `linkusd-4h.json` (formato de Bitstamp, de
   `mcp-tv-get-ohlcv` o una lista de velas) en lugar de bajarlos.
 - `--json` en `escanear` y `simular` da los datos completos.
+
+## Controles contra errores
+
+- **Solo velas cerradas.** La vela en curso nunca confirma.
+- **Datos dudosos = NO EVALUABLE.** Si falta una vela de 1h o de 4h en el tramo que usa la
+  regla, o hay una vela imposible (máximo por debajo del mínimo), la moneda sale NO EVALUABLE
+  con el motivo. Igual si el último dato tiene más de 24 h de retraso.
+- **Distancia del stop en ATR.** Cada plan dice a cuántos ATR de 1h está el stop y avisa si
+  está a menos de 1 ATR (lo puede tocar el movimiento normal) o a más de 4 (sale muy pequeña).
+- **La historia no cuenta dos veces la misma operación.** Si salen señales varias horas
+  seguidas, solo cuenta la primera mientras siga abierta, como en la práctica.
+
+## Ajustar entradas y stops sin engañarse: `estudiar`
+
+Compara el stop de la regla con tres alternativas (colchón de 0,25 ATR, 1,5 ATR desde la
+entrada, mínimo de 20 velas) y objetivos de 1,5R, 2R y 3R, con coste por operación.
+
+- Parte el periodo en dos mitades. **Una variante solo se propone si gana a la regla en las
+  dos**, con un margen de 0,05R y al menos 30 operaciones en cada mitad. Lo que mejora en una
+  mitad y no en la otra suele ser casualidad.
+- Al probar 12 combinaciones, alguna puede ganar por suerte. Una propuesta hay que volver a
+  comprobarla con datos nuevos antes de usarla.
+- **Nunca cambia la regla por su cuenta.** La regla se fija antes; cambiarla lo decide el usuario.
+
+## Revisión continua
+
+Cada semana conviene: pasar las pruebas (`python3 -m unittest discover -s tests`), lanzar
+`estudiar` y comparar con la semana anterior, comprobar que Bitstamp sigue respondiendo y que
+la alerta real más reciente coincide con lo que da `escanear --ahora`. Cualquier cambio de
+código va en una rama con su petición de unión; el usuario decide si se une.
 
 ## Cómo presentar el resultado
 

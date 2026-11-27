@@ -191,6 +191,76 @@ class Simulacion(unittest.TestCase):
         self.assertEqual(cr.historial(v1, a_4h(v1), horas=48), [])   # la única señal es la última vela
 
 
+class CalidadYEstudio(unittest.TestCase):
+    def test_hueco_en_las_velas_es_no_evaluable(self):
+        v1 = velas_1h(300, salto=1.0)
+        v4 = a_4h(v1)
+        del v1[-5]
+        r = cr.estado_moneda("LINK", v1, v4, v1[-1]["t"] + H1 + 60)
+        self.assertEqual(r["ahora"], "NO EVALUABLE")
+        self.assertIn("falta la vela", r["motivo"])
+
+    def test_vela_imposible_es_no_evaluable(self):
+        v1 = velas_1h(300)
+        v1[-3]["h"] = v1[-3]["l"] - 1
+        self.assertTrue(cr.revisar_velas(v1, H1, 10))
+        self.assertEqual(cr.revisar_velas(velas_1h(300), H1, 50), [])
+
+    def _con_senales_seguidas(self):
+        # tendencia que rompe máximos varias horas seguidas y luego se queda plana
+        v1 = velas_1h(300)
+        for k in range(1, 6):
+            b = v1[-60 + k]
+            b["c"] += 0.5 * k
+            b["h"] = b["c"] + 0.05
+        for b in v1[-60 + 6:]:
+            b["c"] = v1[-60 + 5]["c"]
+            b["o"], b["h"], b["l"] = b["c"], b["c"] + 0.01, b["c"] - 0.01
+        return v1
+
+    def test_senales_seguidas_cuentan_una_vez(self):
+        v1 = self._con_senales_seguidas()
+        v4 = a_4h(v1)
+        lista = cr.senales(v1, v4, solo_zona=False)
+        ops = cr.operaciones(v1, lista, horas=24)
+        self.assertGreater(len(lista), len(ops))
+        for a, b in zip(ops, ops[1:]):
+            self.assertGreater(b["ts"], a["ts"])
+
+    def test_coste_resta_en_r(self):
+        v1 = self._con_senales_seguidas()
+        lista = cr.senales(v1, a_4h(v1), solo_zona=False)
+        sin = cr.operaciones(v1, lista, horas=24)
+        con = cr.operaciones(v1, lista, horas=24, coste_pct=0.1)
+        self.assertEqual(len(sin), len(con))
+        for a, b in zip(sin, con):
+            self.assertLess(b["R"], a["R"])
+
+    def test_conclusion_exige_ganar_en_los_dos_periodos(self):
+        r = lambda m, n=40: {"n": n, "R_medio": m}
+        est = {"filas": [
+            {"stop": "regla", "objetivo_R": 2.0, "p1": r(0.0), "p2": r(0.0), "total": r(0.0)},
+            {"stop": "atr15", "objetivo_R": 2.0, "p1": r(0.3), "p2": r(-0.1), "total": r(0.1)},   # solo gana en uno
+            {"stop": "min20", "objetivo_R": 2.0, "p1": r(0.2, 10), "p2": r(0.2, 10), "total": r(0.2, 20)},  # pocas
+        ]}
+        self.assertEqual(cr.conclusion(est)[1], [])
+        est["filas"].append({"stop": "colchon", "objetivo_R": 2.0, "p1": r(0.1), "p2": r(0.1), "total": r(0.1)})
+        self.assertEqual(cr.conclusion(est)[1][0]["stop"], "colchon")
+
+    def test_nota_stop(self):
+        self.assertIn("muy cerca", cr.nota_stop(0.5, 1.0))
+        self.assertIn("muy lejos", cr.nota_stop(5.0, 1.0))
+        self.assertEqual(cr.nota_stop(2.0, 1.0), "stop a 2,0 ATR")
+        self.assertEqual(cr.nota_stop(2.0, None), "")
+
+    def test_stop_atr(self):
+        v1 = velas_1h(300, salto=1.0)
+        s = cr.senal_en(v1, len(v1) - 1, a_4h(v1))
+        atrs = cr.atr(v1)
+        self.assertAlmostEqual(cr.stop_variante("atr15", s, v1, atrs), s["entrada"] - 1.5 * atrs[-1])
+        self.assertLess(cr.stop_variante("colchon", s, v1, atrs), s["stop"])
+
+
 class FichasYNoticias(unittest.TestCase):
     def test_ficha_con_los_ocho_campos(self):
         f = cr.ficha(1, "LINK", "COMPRA", 9.694, "1h", "Cierre por encima", cr.parse_ahora("2026-11-28 20:00"))
