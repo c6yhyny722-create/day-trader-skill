@@ -1115,6 +1115,86 @@ def cmd_afondo(a):
     return 0
 
 
+def ventaja(v1, v4, horas=720, coste_pct=0.1, tramos=3):
+    """Cómo le ha ido a la regla en esta moneda: total y último periodo, sin y con el filtro
+    de horas. Sirve para ordenar oportunidades, no para cambiar la regla."""
+    lista, atrs, extra = senales(v1, v4), atr(v1), datos_filtros(v1)
+    t0, t1 = v1[N_RUPTURA]["t"], v1[-1]["t"]
+    ultimo = t0 + (t1 - t0) * (tramos - 1) // tramos
+    out = {}
+    for nombre in ("ninguno", "horas"):
+        sel = [x for x in lista if pasa_filtro(nombre, x, v1, extra)]
+        ops = operaciones(v1, sel, horas, "regla", OBJETIVO_R, coste_pct, atrs)
+        out[nombre] = {"total": resumen(ops), "ultimo": resumen([o for o in ops if o["ts"] >= ultimo]),
+                       "compra": resumen([o for o in ops if o["lado"] == "COMPRA"]),
+                       "venta": resumen([o for o in ops if o["lado"] == "VENTA"])}
+    return out
+
+
+def oportunidad(r, vent):
+    """Ficha corta de una moneda para el ranking: estado, disparo, distancia y ventaja."""
+    o = {"moneda": r["moneda"], "ahora": r.get("ahora"), "r": r, "ventaja": vent}
+    if r.get("ahora") == "NO EVALUABLE":
+        o["orden"] = (3, 99)
+        return o
+    a = r.get("atr") or 0
+    if r.get("compra_si") is not None:
+        lado, nivel = "COMPRA", r["compra_si"]
+    else:
+        lado, nivel = "VENTA", r["venta_si"]
+    o.update(lado=lado, nivel=nivel, dist_pct=100.0 * abs(nivel - r["cierre"]) / r["cierre"],
+             dist_atr=abs(nivel - r["cierre"]) / a if a else None)
+    hist = vent["ninguno"][lado.lower()] if vent else {}
+    o["r_lado"] = hist.get("R_medio") if hist.get("n") else None
+    activa = r["ahora"].startswith(("COMPRA", "VENTA"))
+    sin_ventaja = o["r_lado"] is not None and o["r_lado"] <= 0
+    o["orden"] = (0 if activa else 2 if sin_ventaja else 1, o["dist_atr"] if o["dist_atr"] is not None else 99)
+    return o
+
+
+def cmd_oportunidades(a):
+    ahora = parse_ahora(a.ahora)
+    ops = []
+    for m in _monedas(a.monedas):
+        try:
+            v1, v4 = cargar(m, a.offline, a.dias * 24)
+            v1, v4 = cerradas(v1, H1, ahora), cerradas(v4, H4, ahora)
+            r = estado_moneda(m, v1, v4, ahora)
+            ops.append(oportunidad(r, ventaja(v1, v4) if r.get("ahora") != "NO EVALUABLE" else None))
+        except Error as e:
+            ops.append({"moneda": m, "ahora": "NO EVALUABLE", "motivo": str(e), "orden": (3, 99)})
+    ops.sort(key=lambda o: o["orden"])
+    rm = lambda x: fmt(x["R_medio"], 2) if x and x.get("n") else "-"
+    out = ["| # | Moneda | Ahora | Disparo | Distancia | Regla 3 años (este lado) | Último año |",
+           "|---|---|---|---|---|---|---|"]
+    for i, o in enumerate(ops, 1):
+        if o.get("ahora") == "NO EVALUABLE":
+            out.append("| %d | %s | NO EVALUABLE | | | | |" % (i, o["moneda"]))
+            continue
+        lado = o["lado"]
+        disparo = "%s vela 1h %s %s" % (ICONO[lado] + " " + lado, ">" if lado == "COMPRA" else "<", fmt(o["nivel"]))
+        dist = "%s (%s ATR)" % (pct(o["dist_pct"], 1), fmt(o["dist_atr"], 1) if o["dist_atr"] is not None else "-")
+        v = o["ventaja"]["ninguno"]
+        out.append("| %d | %s | %s | %s | %s | %s R | %s R |" % (
+            i, o["moneda"], etiqueta_ahora(o["ahora"]), disparo, dist, rm(v[lado.lower()]), rm(v["ultimo"])))
+    out += ["", "Orden: primero las que tienen señal activa; después las que están más cerca de su disparo "
+            "(en ATR de 1h) y cuya regla ha ganado en ese lado en 3 años; al final, las que no han ganado.",
+            "Regla 3 años = resultado medio por operación de la regla en esa moneda y ese lado (COMPRA o VENTA), "
+            "con costes. Último año = todas sus operaciones del último año.", ""]
+    for o in ops:
+        if o.get("ahora") == "NO EVALUABLE":
+            out.append("%s: NO EVALUABLE (%s)." % (o["moneda"], o.get("motivo") or o["r"].get("motivo", "sin datos")))
+            continue
+        h, n = o["ventaja"]["horas"]["total"], o["ventaja"]["ninguno"]["total"]
+        if h.get("n") and n.get("n") and h["R_medio"] > n["R_medio"] + 0.05:
+            out.append("%s: con el filtro de horas (15:00 a 19:00, Madrid) la regla sube de %s a %s R en 3 años." % (
+                o["moneda"], rm(n), rm(h)))
+    out += ["", "Datos: velas cerradas de Bitstamp, horas de Madrid. Un estudio del pasado no garantiza el futuro.",
+            CIERRE]
+    print("\n".join(out))
+    return 0
+
+
 def cmd_tamano(a):
     t = tamano(a.capital, a.riesgo, a.entrada, a.stop, a.tope)
     lado = "COMPRA" if a.stop < a.entrada else "VENTA"
@@ -1250,6 +1330,12 @@ def main(argv=None):
     s.add_argument("--coste", type=float, default=0.1)
     comun(s)
     s.set_defaults(fn=cmd_afondo)
+
+    s = sub.add_parser("oportunidades", help="las 10 monedas ordenadas por oportunidad")
+    s.add_argument("monedas", nargs="*")
+    s.add_argument("--dias", type=int, default=1095)
+    comun(s)
+    s.set_defaults(fn=cmd_oportunidades)
 
     s = sub.add_parser("tamano", help="unidades para un % de riesgo")
     s.add_argument("--capital", type=float, required=True)
