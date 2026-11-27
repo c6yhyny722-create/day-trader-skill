@@ -106,10 +106,19 @@ def parse_ahora(texto):
 
 # ---------------------------------------------------------------- formato
 
+_PRECISION = [None]   # decimales fijos del activo que se está mostrando (EUR/USD: 5)
+
+
+def fijar_precision(moneda):
+    _PRECISION[0] = MATERIAS.get(moneda, {}).get("dec") if moneda else None
+
+
 def fmt(x, dec=None):
-    """Número en formato español; decimales según el precio."""
+    """Número en formato español; decimales según el precio (o los del activo, en divisas)."""
     if x is None:
         return "sin dato"
+    if dec is None and _PRECISION[0] is not None:
+        dec = _PRECISION[0]
     if dec is None:
         a = abs(x)
         dec = 0 if a >= 1000 else 2 if a >= 10 else 3 if a >= 1 else 4 if a >= 0.1 else 6
@@ -138,12 +147,27 @@ def suelo(x, dec):
 # barato). Los niveles exactos de las fichas hay que comprobarlos en TradingView, o pasar sus
 # velas con --offline (formato de mcp-tv-get-ohlcv).
 MATERIAS = {
-    "ORO": {"yahoo": "GC=F", "tv": "TVC:GOLD", "fuente": "futuros COMEX del oro (GC=F, Yahoo)"},
-    "PLATA": {"yahoo": "SI=F", "tv": "TVC:SILVER", "fuente": "futuros COMEX de la plata (SI=F, Yahoo)"},
+    "ORO": {"yahoo": "GC=F", "tv": "TVC:GOLD", "fuente": "futuros COMEX del oro (GC=F, Yahoo)", "coste": 0.05},
+    "PLATA": {"yahoo": "SI=F", "tv": "TVC:SILVER", "fuente": "futuros COMEX de la plata (SI=F, Yahoo)", "coste": 0.05},
+    # Divisas: el precio apenas cambia entre fuentes (1-2 pips), así que los niveles valen tal cual.
+    # No hay volumen centralizado: el filtro de volumen no se aplica.
+    "EURUSD": {"yahoo": "EURUSD=X", "tv": "FX:EURUSD", "fuente": "Yahoo (EURUSD=X)", "dec": 5, "exacto": True,
+               "coste": 0.02},
 }
-ALIAS = {"GOLD": "ORO", "XAU": "ORO", "XAUUSD": "ORO", "SILVER": "PLATA", "XAG": "PLATA", "XAGUSD": "PLATA"}
+ALIAS = {"GOLD": "ORO", "XAU": "ORO", "XAUUSD": "ORO", "SILVER": "PLATA", "XAG": "PLATA", "XAGUSD": "PLATA",
+         "EUR": "EURUSD", "EURODOLAR": "EURUSD", "EURODÓLAR": "EURUSD"}
 YAHOO_CHART = "https://query2.finance.yahoo.com/v8/finance/chart/%s?interval=60m&range=%s"
 DESFASE_SESION = 2 * 3600   # la sesión del oro empieza a las 22:00/23:00 UTC: cuenta para el día siguiente
+
+
+def texto_coste(c):
+    return pct(c) if isinstance(c, (int, float)) else (c or "el de cada activo")
+
+
+def coste_de(moneda):
+    """Coste ida y vuelta en % (comisión + diferencial) por defecto: cripto 0,1; oro y plata
+    0,05; EUR/USD 0,02 (1-2 pips)."""
+    return MATERIAS.get(moneda, {}).get("coste", 0.1)
 
 
 def es_materia(moneda):
@@ -750,9 +774,11 @@ def estudio_filtros(v1, v4, horas=720, coste_pct=0.1, tramos=3, min_ops=30, marg
                                                          for l in ("COMPRA", "VENTA")}})
     base = filas[0]
     for f in filas:
-        f["robusto"] = f is not base and all(
+        f["mejora"] = f is not base and all(
             p.get("n", 0) >= min_ops and b.get("n", 0) and p["R_medio"] > b["R_medio"] + margen
             for p, b in zip(f["partes"], base["partes"]))
+        # ✅ solo si además gana dinero: mejorar algo que pierde no lo hace bueno
+        f["robusto"] = f["mejora"] and f["total"].get("R_medio", 0) > 0
     return {"cortes": cortes, "filas": filas, "coste_pct": coste_pct, "horas": horas}
 
 
@@ -792,7 +818,8 @@ def tamano(capital, riesgo_pct, entrada, stop, tope_pct=100.0):
     limite = "riesgo" if por_riesgo <= por_capital else "capital (sin apalancamiento)"
     u = suelo(min(por_riesgo, por_capital), dec)
     return {"unidades": u, "decimales": dec, "R": R, "importe": u * entrada, "perdida": u * R,
-            "limite": limite, "riesgo_objetivo": capital * riesgo_pct / 100.0}
+            "limite": limite, "riesgo_objetivo": capital * riesgo_pct / 100.0,
+            "unidades_riesgo": suelo(por_riesgo, dec), "apalancamiento": por_riesgo * entrada / capital}
 
 
 def comprobar_riesgo(capital, riesgo_pct, entrada, stop, objetivos, lado, ahora_ts,
@@ -905,10 +932,14 @@ def texto_senal(s):
 
 
 def informe(resultados):
+    previa = _PRECISION[0]
     out = ["| Activo | Último cierre (hora) | Ahora | 🟢 COMPRA si | 🔴 VENTA si | Caducidad |",
            "|---|---|---|---|---|---|"]
-    out += [linea_tabla(r) for r in resultados]
     for r in resultados:
+        fijar_precision(r["moneda"])
+        out.append(linea_tabla(r))
+    for r in resultados:
+        fijar_precision(r["moneda"])
         out.append("")
         if r.get("ahora") == "NO EVALUABLE":
             out.append("%s: NO EVALUABLE, %s." % (r["moneda"], r.get("motivo", "sin datos")))
@@ -919,15 +950,16 @@ def informe(resultados):
             "solo se buscan COMPRAS" if cx["alcista"] else "solo se buscan VENTAS"))
         ind = r.get("indicadores")
         if ind:
-            out.append("  1h: RSI %s · MACD %s / señal %s / histograma %s · Bollinger %s (ancho %s) · "
-                       "volumen %s de su media" % (
-                           fmt(ind["rsi"], 2), fmt(ind["macd"]), fmt(ind["senal"]), fmt(ind["hist"]),
-                           "mitad alta" if ind["bb_pos"] >= 0.5 else "mitad baja", pct(ind["bb_ancho"], 1),
-                           pct(100 * ind["vol_rel"], 0) if ind["vol_rel"] is not None else "sin dato"))
+            out.append("  1h: RSI %s · MACD %s / señal %s / histograma %s · Bollinger %s (ancho %s) · %s" % (
+                fmt(ind["rsi"], 2), fmt(ind["macd"]), fmt(ind["senal"]), fmt(ind["hist"]),
+                "mitad alta" if ind["bb_pos"] >= 0.5 else "mitad baja", pct(ind["bb_ancho"], 1),
+                "volumen %s de su media" % pct(100 * ind["vol_rel"], 0) if ind["vol_rel"] is not None
+                else "sin datos de volumen"))
         if r.get("ultima_senal"):
             out.append("  Última señal (24 h): " + texto_senal(r["ultima_senal"]))
         if r.get("retraso_h"):
             out.append("  Aviso: el dato llega con %s h de retraso." % fmt(r["retraso_h"], 0))
+    _PRECISION[0] = previa
     out += ["", texto_datos(resultados), CIERRE]
     return "\n".join(out)
 
@@ -944,7 +976,7 @@ def texto_datos(resultados):
 
 
 def aviso_materia(moneda, offline):
-    if not es_materia(moneda) or offline:
+    if not es_materia(moneda) or offline or MATERIAS[moneda].get("exacto"):
         return ""
     return ("⚠️ %s: los niveles salen de los %s. %s es el precio al contado y suele estar algo más "
             "barato (en el oro, unos 30 $). Comprueba el nivel en TradingView antes de crear la alerta, "
@@ -957,7 +989,7 @@ def aviso_materia(moneda, offline):
 def _monedas(lista):
     out = []
     for m in (lista or MONEDAS):
-        m = m.upper().replace("BITSTAMP:", "").replace("TVC:", "")
+        m = m.upper().split(":")[-1].replace("/", "").replace("-", "")
         m = ALIAS.get(m, m)
         out.append(m if m in MATERIAS else m.replace("USD", ""))
     return out
@@ -979,6 +1011,7 @@ def cmd_escanear(a):
 def cmd_senal(a):
     ahora = parse_ahora(a.ahora)
     m = _monedas([a.moneda])[0]
+    fijar_precision(m)
     v1, v4 = cargar(m, a.offline, a.horas)
     r = estado_moneda(m, v1, v4, ahora, a.vigencia)
     print(informe([r]).rsplit("\n\nDatos:", 1)[0])
@@ -989,7 +1022,7 @@ def cmd_senal(a):
     print("")
     caduca = r["cierre_ts"] + 24 * H1
     if r.get("compra_si") is not None:
-        print(ficha(1, m, "COMPRA", r["compra_si"], "1h", "Cierre por encima", caduca, "revisar volumen"))
+        print(ficha(1, m, "COMPRA", r["compra_si"], "1h", "Cierre por encima", caduca, "" if MATERIAS.get(m, {}).get("exacto") else "revisar volumen"))
         st = r["stop_compra"]
         if st < r["compra_si"]:
             R = r["compra_si"] - st
@@ -998,7 +1031,7 @@ def cmd_senal(a):
                       fmt(r["compra_si"]), fmt(st), fmt(R), fmt(r["compra_si"] + 2 * R), fmt(r["compra_si"] + 0.5 * R),
                       nota_stop(R, r.get("atr"))))
     if r.get("venta_si") is not None:
-        print(ficha(1, m, "VENTA", r["venta_si"], "1h", "Cierre por debajo", caduca, "revisar volumen"))
+        print(ficha(1, m, "VENTA", r["venta_si"], "1h", "Cierre por debajo", caduca, "" if MATERIAS.get(m, {}).get("exacto") else "revisar volumen"))
         st = r["stop_venta"]
         if st > r["venta_si"]:
             R = st - r["venta_si"]
@@ -1020,7 +1053,7 @@ def _plan_de(a, v1, v4, ahora):
         largo = a.stop < a.entrada
         obj = a.objetivo if a.objetivo is not None else a.entrada + (2 if largo else -2) * abs(a.entrada - a.stop)
         return a.entrada, a.stop, obj, "plan indicado"
-    r = estado_moneda(a.moneda.upper(), v1, v4, ahora, a.vigencia)
+    r = estado_moneda(_monedas([a.moneda])[0], v1, v4, ahora, a.vigencia)
     s = r.get("ultima_senal")
     if s:
         return s["entrada"], s["stop"], s["objetivo"], "señal %s de las %s" % (s["lado"], hora(s["cierre_ts"]))
@@ -1035,7 +1068,8 @@ def _plan_de(a, v1, v4, ahora):
 
 def cmd_simular(a):
     ahora = parse_ahora(a.ahora)
-    m = a.moneda.upper()
+    m = _monedas([a.moneda])[0]
+    fijar_precision(m)
     v1, v4 = cargar(m, a.offline, a.horas_datos)
     v1c, v4c = cerradas(v1, H1, ahora), cerradas(v4, H4, ahora)
     entrada, stop, obj, origen = _plan_de(a, v1c, v4c, ahora)
@@ -1072,7 +1106,7 @@ def cmd_simular(a):
 OBJETIVOS_R = (1.5, 2.0, 3.0)
 
 
-def estudio(datos, horas=720, coste_pct=0.1, lado=None):
+def estudio(datos, horas=720, coste_pct=None, lado=None):
     """datos = {moneda: (v1, v4)} cerradas. Compara cada stop × objetivo en dos mitades del
     periodo. Devuelve filas por variante (todas las monedas juntas) y por moneda (la regla)."""
     t_ini = max(v1[0]["t"] for v1, _ in datos.values())
@@ -1085,7 +1119,8 @@ def estudio(datos, horas=720, coste_pct=0.1, lado=None):
             p1, p2 = [], []
             for m, (v1, v4) in datos.items():
                 lista, atrs = cache[m]
-                ops = [o for o in operaciones(v1, lista, horas, modo, r, coste_pct, atrs) if o["ts"] >= t_ini]
+                cp = coste_pct if coste_pct is not None else coste_de(m)
+                ops = [o for o in operaciones(v1, lista, horas, modo, r, cp, atrs) if o["ts"] >= t_ini]
                 p1 += [o for o in ops if o["ts"] < corte]
                 p2 += [o for o in ops if o["ts"] >= corte]
                 if modo == "regla" and r == OBJETIVO_R:
@@ -1107,7 +1142,7 @@ def conclusion(est, min_ops=30, margen=0.05):
         if base["p1"]["n"] == 0 or base["p2"]["n"] == 0:
             continue
         if (f["p1"]["R_medio"] > base["p1"]["R_medio"] + margen and
-                f["p2"]["R_medio"] > base["p2"]["R_medio"] + margen):
+                f["p2"]["R_medio"] > base["p2"]["R_medio"] + margen and f["total"].get("R_medio", 0) > 0):
             mejores.append(f)
     mejores.sort(key=lambda f: -min(f["p1"]["R_medio"], f["p2"]["R_medio"]))
     return base, mejores
@@ -1125,6 +1160,8 @@ def cmd_estudiar(a):
     if not datos:
         raise Error("no hay datos de ninguna moneda")
     est = estudio(datos, a.horas, a.coste, a.lado.upper() if a.lado else None)
+    if a.coste is None:
+        est["coste_pct"] = None
     if a.json:
         print(json.dumps(est, ensure_ascii=False, indent=1))
         return 0
@@ -1132,7 +1169,7 @@ def cmd_estudiar(a):
     out = ["Estudio de la regla «ruptura 20 + contexto 4h» · %d monedas · %s a %s (Madrid)" % (
         len(datos), hora(est["desde"]), hora(est["hasta"])),
         "Periodo 1: hasta %s · periodo 2: desde %s · coste %s ida y vuelta · máximo %d h por operación" % (
-            hora(est["corte"]), hora(est["corte"]), pct(est["coste_pct"]), est["horas"]),
+            hora(est["corte"]), hora(est["corte"]), texto_coste(est["coste_pct"]), est["horas"]),
         "Operaciones sin solaparse: mientras una sigue abierta no se cuenta otra en la misma moneda.", "",
         "| Stop | Objetivo | Operaciones | Aciertos | R medio P1 | R medio P2 | R medio | Factor |",
         "|---|---|---|---|---|---|---|---|"]
@@ -1170,7 +1207,8 @@ def cmd_estudiar(a):
 
 def cmd_afondo(a):
     ahora = parse_ahora(a.ahora)
-    m = a.moneda.upper()
+    m = _monedas([a.moneda])[0]
+    fijar_precision(m)
     v1, v4 = cargar(m, a.offline, a.dias * 24)
     v1, v4 = cerradas(v1, H1, ahora), cerradas(v4, H4, ahora)
     r = estado_moneda(m, v1, v4, ahora)
@@ -1199,13 +1237,14 @@ def cmd_afondo(a):
     top = sorted(ph.items(), key=lambda x: -x[1][0])[:4]
     low = sorted(ph.items(), key=lambda x: x[1][0])[:3]
     out += ["", "Horas de más movimiento (Madrid, últimos 90 días): " + ", ".join(
-        "%02d:00 (%s, volumen ×%s)" % (h, pct(rg), fmt(vr, 1)) for h, (rg, vr) in top),
+        ("%02d:00 (%s, volumen ×%s)" % (h, pct(rg), fmt(vr, 1)) if vr else "%02d:00 (%s)" % (h, pct(rg)))
+        for h, (rg, vr) in top),
         "Horas más tranquilas: " + ", ".join("%02d:00 (%s)" % (h, pct(rg)) for h, (rg, vr) in low)]
-    est = estudio_filtros(v1, v4, a.horas, a.coste, moneda=m)
+    est = estudio_filtros(v1, v4, a.horas, a.coste if a.coste is not None else coste_de(m), moneda=m)
     c = est["cortes"]
     fecha = lambda t: a_madrid(t).strftime("%d/%m/%Y")
     out += ["", "Estudio de la regla con filtros · %s a %s (%s velas de 1h) · objetivo 2R · coste %s · máximo %d h" % (
-        fecha(c[0]), fecha(v1[-1]["t"]), fmt(len(v1), 0), pct(est["coste_pct"]), est["horas"]),
+        fecha(c[0]), fecha(v1[-1]["t"]), fmt(len(v1), 0), texto_coste(est["coste_pct"]), est["horas"]),
         "Periodos: P1 hasta %s · P2 hasta %s · P3 hasta hoy." % (fecha(c[1]), fecha(c[2])),
         "| Filtro | Stop | Ops | Aciertos | R P1 | R P2 | R P3 | R medio | Compras R | Ventas R |",
         "|---|---|---|---|---|---|---|---|---|---|"]
@@ -1213,26 +1252,33 @@ def cmd_afondo(a):
     for f in est["filas"]:
         t = f["total"]
         out.append("| %s%s | %s | %d | %s | %s | %s | %s | %s | %s | %s |" % (
-            f["filtro"], " ✅" if f["robusto"] else "", "regla" if f["stop"] == "regla" else "1,5 ATR",
+            f["filtro"], " ✅" if f["robusto"] else " ↑" if f["mejora"] else "",
+            "regla" if f["stop"] == "regla" else "1,5 ATR",
             t.get("n", 0), pct(t["acierto"], 0) if t.get("n") else "-", rm(f["partes"][0]), rm(f["partes"][1]),
             rm(f["partes"][2]), rm(t), rm(f["por_lado"]["COMPRA"]), rm(f["por_lado"]["VENTA"])))
     buenos = [f for f in est["filas"] if f["robusto"]]
     out.append("")
     out.append("Filtros: " + "; ".join("%s = %s" % (n, t) for n, t in FILTROS[1:]) + ".")
     if buenos:
-        out.append("✅ = mejora a la regla en los 3 periodos, con margen y operaciones suficientes. "
+        out.append("✅ = mejora a la regla en los 3 periodos, con margen y operaciones suficientes, y gana dinero. "
                    "Es una PROPUESTA: la regla no se cambia sin que lo decidas tú.")
     else:
-        out.append("Ningún filtro mejora a la regla en los 3 periodos: no conviene añadir ninguno todavía.")
+        out.append("Ningún filtro mejora a la regla en los 3 periodos ganando dinero: no conviene añadir ninguno todavía.")
+    if any(f["mejora"] and not f["robusto"] for f in est["filas"]):
+        out.append("↑ = mejora a la regla en los 3 periodos, pero sigue perdiendo: no sirve para operar.")
+    base = est["filas"][0]["total"]
+    if base.get("n") and base["R_medio"] <= 0:
+        out.append("⚠️ La regla tal cual NO gana en este activo (%s R por operación, con costes)." % fmt(base["R_medio"], 2))
     out += ["", "Un estudio del pasado no garantiza el futuro.", CIERRE]
     print("\n".join(out))
     return 0
 
 
-def ventaja(v1, v4, horas=720, coste_pct=0.1, tramos=3, moneda=None):
+def ventaja(v1, v4, horas=720, coste_pct=None, tramos=3, moneda=None):
     """Cómo le ha ido a la regla en esta moneda: total y último periodo, sin y con el filtro
     de horas. Sirve para ordenar oportunidades, no para cambiar la regla."""
     lista, atrs, extra = senales(v1, v4), atr(v1), datos_filtros(v1, moneda)
+    coste_pct = coste_pct if coste_pct is not None else coste_de(moneda)
     t0, t1 = v1[N_RUPTURA]["t"], v1[-1]["t"]
     ultimo = t0 + (t1 - t0) * (tramos - 1) // tramos
     out = {}
@@ -1282,6 +1328,7 @@ def cmd_oportunidades(a):
     out = ["| # | Moneda | Ahora | Disparo | Distancia | Regla 3 años (este lado) | Último año |",
            "|---|---|---|---|---|---|---|"]
     for i, o in enumerate(ops, 1):
+        fijar_precision(o["moneda"])
         if o.get("ahora") == "NO EVALUABLE":
             out.append("| %d | %s | NO EVALUABLE | | | | |" % (i, o["moneda"]))
             continue
@@ -1291,6 +1338,7 @@ def cmd_oportunidades(a):
         v = o["ventaja"]["ninguno"]
         out.append("| %d | %s | %s | %s | %s | %s R | %s R |" % (
             i, o["moneda"], etiqueta_ahora(o["ahora"]), disparo, dist, rm(v[lado.lower()]), rm(v["ultimo"])))
+    fijar_precision(None)
     out += ["", "Orden: primero las que tienen señal activa; después las que están más cerca de su disparo "
             "(en ATR de 1h) y cuya regla ha ganado en ese lado en 3 años; al final, las que no han ganado.",
             "Regla 3 años = resultado medio por operación de la regla en esa moneda y ese lado (COMPRA o VENTA), "
@@ -1310,19 +1358,26 @@ def cmd_oportunidades(a):
 
 
 def cmd_tamano(a):
+    if a.moneda:
+        fijar_precision(_monedas([a.moneda])[0])
     t = tamano(a.capital, a.riesgo, a.entrada, a.stop, a.tope)
     lado = "COMPRA" if a.stop < a.entrada else "VENTA"
     obj = a.objetivo if a.objetivo is not None else a.entrada + (2 if lado == "COMPRA" else -2) * t["R"]
     print("%s %s · entrada %s · stop %s · objetivo %s" % (ICONO[lado], lado, fmt(a.entrada), fmt(a.stop), fmt(obj)))
     print("Cuenta: %s × %s = %s que se arriesgan. %s ÷ %s por unidad = %s unidades." % (
         fmt(a.capital, 0), pct(a.riesgo), fmt(t["riesgo_objetivo"], 2), fmt(t["riesgo_objetivo"], 2),
-        fmt(t["R"]), fmt(t["unidades"], t["decimales"])))
+        fmt(t["R"]), fmt(t["unidades_riesgo"], t["decimales"])))
     print("| Unidades | Importe | Pierdes en el stop | Ganas en el objetivo |")
     print("|---|---|---|---|")
     print("| %s | %s | %s | %s |" % (fmt(t["unidades"], t["decimales"]), fmt(t["importe"], 2), fmt(t["perdida"], 2),
                                    fmt(t["unidades"] * abs(obj - a.entrada), 2)))
     if t["limite"] != "riesgo":
-        print("Lo limita el capital: sin apalancamiento no se puede comprar más.")
+        print("Lo limita el capital: sin apalancamiento no se puede más. Con todo el capital arriesgas %s (%s)." % (
+            fmt(t["perdida"], 2), pct(100 * t["perdida"] / a.capital)))
+        print("Para arriesgar el %s harían falta %s unidades (importe %s): apalancamiento ×%s. "
+              "Úsalo solo si tu regla lo permite." % (
+                  pct(a.riesgo), fmt(t["unidades_riesgo"], t["decimales"]),
+                  fmt(t["unidades_riesgo"] * a.entrada, 0), fmt(t["apalancamiento"], 1)))
     print(CIERRE)
     return 0
 
@@ -1342,13 +1397,15 @@ def cmd_riesgo(a):
 
 def cmd_precio(a):
     for m in _monedas(a.monedas):
+        fijar_precision(m)
         if es_materia(m):
             try:
                 doc = json.loads(_get(YAHOO_CHART % (urllib.request.quote(MATERIAS[m]["yahoo"]), "1d")).decode("utf-8"))
                 meta = doc["chart"]["result"][0]["meta"]
-                print("%s: %s · %s (Madrid) · %s (en %s puede ser algo menor)" % (
+                print("%s: %s · %s (Madrid) · %s (%s)" % (
                     m, fmt(float(meta["regularMarketPrice"])), hora(int(meta["regularMarketTime"])),
-                    MATERIAS[m]["fuente"], simbolo_tv(m)))
+                    MATERIAS[m]["fuente"], "como %s, ±1-2 pips" % simbolo_tv(m) if MATERIAS[m].get("exacto")
+                    else "en %s puede ser algo menor" % simbolo_tv(m)))
             except (Error, KeyError, ValueError, IndexError, TypeError) as e:
                 print("%s: NO EVALUABLE (%s)" % (m, e))
             continue
@@ -1364,7 +1421,8 @@ def cmd_ficha(a):
     ahora = parse_ahora(a.ahora)
     caduca = parse_ahora(a.caduca) if a.caduca else ahora + 24 * H1
     cond = a.condicion or ("Cierre por encima" if a.lado.upper() == "COMPRA" else "Cierre por debajo")
-    print(ficha(1, a.moneda.upper(), a.lado.upper(), a.nivel, a.marco, cond, caduca, a.texto or ""))
+    fijar_precision(_monedas([a.moneda])[0])
+    print(ficha(1, _monedas([a.moneda])[0], a.lado.upper(), a.nivel, a.marco, cond, caduca, a.texto or ""))
     print("\nEs una ficha PROPUESTA: no existe en TradingView hasta que la crees tú.")
     return 0
 
@@ -1441,7 +1499,7 @@ def main(argv=None):
     s.add_argument("--horas", type=int, default=720,
                    help="horas máximas por operación (720 = 30 días: en la práctica, hasta stop u objetivo)")
     s.add_argument("--horas-datos", type=int, default=2000)
-    s.add_argument("--coste", type=float, default=0.1, help="%% de coste ida y vuelta (0,1)")
+    s.add_argument("--coste", type=float, help="%% de coste ida y vuelta (por defecto, el del activo)")
     s.add_argument("--lado", choices=["compra", "venta"])
     s.add_argument("--json", action="store_true")
     comun(s)
@@ -1452,7 +1510,7 @@ def main(argv=None):
     s.add_argument("--dias", type=int, default=1095, help="días de historia de 1h (1095, unos 3 años)")
     s.add_argument("--horas", type=int, default=720,
                    help="horas máximas por operación (720 = 30 días: en la práctica, hasta stop u objetivo)")
-    s.add_argument("--coste", type=float, default=0.1)
+    s.add_argument("--coste", type=float, help="%% de coste ida y vuelta (por defecto, el del activo)")
     comun(s)
     s.set_defaults(fn=cmd_afondo)
 
@@ -1469,6 +1527,7 @@ def main(argv=None):
     s.add_argument("--stop", type=float, required=True)
     s.add_argument("--objetivo", type=float)
     s.add_argument("--tope", type=float, default=100.0, help="%% máximo del capital en la posición (100)")
+    s.add_argument("--moneda", help="activo, para los decimales (p. ej. EURUSD)")
     s.set_defaults(fn=cmd_tamano)
 
     s = sub.add_parser("riesgo", help="PASA / BLOQUEA según los límites")
@@ -1513,6 +1572,8 @@ def main(argv=None):
     except Error as e:
         print("ERROR: %s" % e, file=sys.stderr)
         return 2
+    finally:
+        fijar_precision(None)
 
 
 if __name__ == "__main__":

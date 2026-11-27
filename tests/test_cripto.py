@@ -250,6 +250,14 @@ class CalidadYEstudio(unittest.TestCase):
         for a, b in zip(sin, con):
             self.assertLess(b["R"], a["R"])
 
+    def test_conclusion_no_propone_lo_que_pierde(self):
+        r = lambda m, n=40: {"n": n, "R_medio": m}
+        est = {"filas": [
+            {"stop": "regla", "objetivo_R": 2.0, "p1": r(-0.5), "p2": r(-0.5), "total": r(-0.5)},
+            {"stop": "atr15", "objetivo_R": 2.0, "p1": r(-0.2), "p2": r(-0.2), "total": r(-0.2)},
+        ]}
+        self.assertEqual(cr.conclusion(est)[1], [])
+
     def test_conclusion_exige_ganar_en_los_dos_periodos(self):
         r = lambda m, n=40: {"n": n, "R_medio": m}
         est = {"filas": [
@@ -407,6 +415,43 @@ class OroYPlata(unittest.TestCase):
         self.assertIn("Comprueba el nivel", cr.aviso_materia("ORO", None))
         self.assertEqual(cr.aviso_materia("ORO", "carpeta"), "")
         self.assertEqual(cr.aviso_materia("BTC", None), "")
+
+
+class EuroDolar(unittest.TestCase):
+    def tearDown(self):
+        cr.fijar_precision(None)
+
+    def test_nombres(self):
+        self.assertEqual(cr._monedas(["EUR/USD", "FX:EURUSD", "oanda:eurusd", "eur"]), ["EURUSD"] * 4)
+        self.assertEqual(cr.simbolo_tv("EURUSD"), "FX:EURUSD")
+
+    def test_cinco_decimales_solo_en_divisas(self):
+        cr.fijar_precision("EURUSD")
+        self.assertEqual(cr.fmt(1.093487), "1,09349")
+        self.assertEqual(cr.fmt(1.5, 2), "1,50")                    # los decimales pedidos mandan
+        f = cr.ficha(1, "EURUSD", "VENTA", 1.093487, "1h", "Cierre por debajo", cr.parse_ahora("2026-11-30 20:00"))
+        self.assertIn("Nivel:       1,09349", f)
+        cr.fijar_precision("BTC")
+        self.assertEqual(cr.fmt(9.30333), "9,303")
+
+    def test_informe_no_borra_la_precision(self):
+        cr.fijar_precision("EURUSD")
+        cr.informe([{"moneda": "EURUSD", "ahora": "NO EVALUABLE", "motivo": "x"}])
+        self.assertEqual(cr.fmt(1.093487), "1,09349")
+
+    def test_sin_aviso_de_contado(self):
+        self.assertEqual(cr.aviso_materia("EURUSD", None), "")
+
+    def test_coste_por_activo(self):
+        self.assertEqual(cr.coste_de("EURUSD"), 0.02)
+        self.assertEqual(cr.coste_de("ORO"), 0.05)
+        self.assertEqual(cr.coste_de("BTC"), 0.1)
+
+    def test_apalancamiento_necesario(self):
+        t = cr.tamano(10000, 1, 1.09349, 1.09733)
+        self.assertNotEqual(t["limite"], "riesgo")
+        self.assertLessEqual(t["importe"], 10000.0)
+        self.assertAlmostEqual(t["apalancamiento"], 100 / 0.00384 * 1.09349 / 10000, places=2)
 
 
 class FichasYNoticias(unittest.TestCase):
