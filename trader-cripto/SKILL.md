@@ -100,6 +100,29 @@ python3 "${CLAUDE_SKILL_DIR}/cripto.py" noticias BTC ETH --horas 12
   en la historia.
 - El símbolo de las fichas es el de TradingView (TVC:GOLD, TVC:SILVER). Las unidades son onzas.
 
+## EUR/USD (FX:EURUSD)
+
+`senal EURUSD`, `afondo EUR/USD`, `escanear EURUSD`... (también FX:EURUSD, OANDA:EURUSD, EUR).
+
+- Velas de 1h de Yahoo (EURUSD=X, casi 3 años). En divisas el precio apenas cambia entre
+  fuentes (1-2 pips), así que los niveles valen tal cual y no hay aviso de contado.
+- Se muestra con 5 decimales. No hay volumen centralizado: el filtro de volumen no se aplica.
+- Con un stop de unas decenas de pips, arriesgar el 1 % pide más importe que el capital:
+  `tamano --moneda EURUSD` dice cuánto se arriesga sin apalancamiento y cuánto apalancamiento
+  haría falta. Solo se usa si la regla del usuario lo permite.
+- Resultado (12/02/2024 a 27/11/2026, coste 0,02 %): la regla **pierde** en EUR/USD
+  (196 operaciones, 29 % de aciertos, −0,19 R, negativa en los tres periodos). Ningún filtro
+  la vuelve rentable. Las rupturas funcionan peor en divisas, que suelen volver a su rango.
+
+## Costes por activo
+
+Por defecto, ida y vuelta: cripto 0,1 %, oro y plata 0,05 %, EUR/USD 0,02 % (`--coste` lo
+cambia). Con un coste mal puesto, un activo de movimientos pequeños como EUR/USD parece mucho
+peor de lo que es.
+
+En `afondo`, ✅ = mejora a la regla en los tres periodos **y gana dinero**; ↑ = mejora pero
+sigue perdiendo (no sirve para operar). `estudiar` tampoco propone variantes que pierden.
+
 ## Controles contra errores
 
 - **Solo velas cerradas.** La vela en curso nunca confirma.
@@ -132,7 +155,7 @@ menos movimiento en hora de Madrid, y la regla con cuatro filtros decididos de a
 (horas con Nueva York abierta, volumen, tendencia diaria, RSI diario extremo) y dos stops,
 en tres periodos de un año. Un filtro solo se marca ✅ si mejora a la regla en los tres.
 
-Lecciones ya aprendidas (BTC, 29/11/2023 a 27/11/2026):
+Lecciones ya aprendidas (BTC, 29/11/2023 a 27/11/2026, coste 0,1 %):
 - **83 días engañan.** Con 83 días la regla en BTC parecía perder (−0,10 R); con 3 años gana
   +0,12 R por operación, con 40 % de aciertos y positiva en los tres años, en línea con la
   prueba de referencia de TradingView (41 %, factor 1,20).
