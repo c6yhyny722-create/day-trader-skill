@@ -303,6 +303,41 @@ class AFondo(unittest.TestCase):
         self.assertEqual(sorted(cr.perfil_horario(velas_1h(24 * 3))), list(range(24)))
 
 
+class Oportunidades(unittest.TestCase):
+    def _r(self, ahora, compra=None, venta=None, cierre=100.0, atr_=1.0):
+        return {"moneda": "X", "ahora": ahora, "cierre": cierre, "compra_si": compra, "venta_si": venta, "atr": atr_}
+
+    def _v(self, rc, rv):
+        res = lambda r: {"n": 30, "R_medio": r}
+        return {"ninguno": {"compra": res(rc), "venta": res(rv), "total": res(0), "ultimo": res(0)},
+                "horas": {"total": res(0)}}
+
+    def test_orden_activa_cerca_lejos_sin_ventaja(self):
+        activa = cr.oportunidad(self._r("COMPRA activada", compra=101), self._v(0.1, 0.1))
+        cerca = cr.oportunidad(self._r("ESPERAR", compra=101), self._v(0.1, 0.1))
+        lejos = cr.oportunidad(self._r("ESPERAR", compra=105), self._v(0.1, 0.1))
+        sin = cr.oportunidad(self._r("ESPERAR", compra=100.5), self._v(-0.2, 0.1))
+        orden = sorted([sin, lejos, cerca, activa], key=lambda o: o["orden"])
+        self.assertEqual(orden, [activa, cerca, lejos, sin])
+
+    def test_distancia_y_lado(self):
+        o = cr.oportunidad(self._r("ESPERAR", venta=98, atr_=0.5), self._v(0.1, -0.1))
+        self.assertEqual(o["lado"], "VENTA")
+        self.assertAlmostEqual(o["dist_pct"], 2.0)
+        self.assertAlmostEqual(o["dist_atr"], 4.0)
+        self.assertEqual(o["r_lado"], -0.1)
+
+    def test_no_evaluable_al_final(self):
+        o = cr.oportunidad({"moneda": "X", "ahora": "NO EVALUABLE"}, None)
+        self.assertEqual(o["orden"][0], 3)
+
+    def test_ventaja_devuelve_los_dos_filtros(self):
+        v1 = velas_1h(24 * 40)
+        v = cr.ventaja(v1, a_4h(v1), horas=24)
+        self.assertEqual(sorted(v), ["horas", "ninguno"])
+        self.assertIn("ultimo", v["ninguno"])
+
+
 class FichasYNoticias(unittest.TestCase):
     def test_ficha_con_los_ocho_campos(self):
         f = cr.ficha(1, "LINK", "COMPRA", 9.694, "1h", "Cierre por encima", cr.parse_ahora("2026-11-28 20:00"))
