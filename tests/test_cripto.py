@@ -1,3 +1,4 @@
+import datetime
 import io
 import json
 import os
@@ -349,6 +350,63 @@ class Oportunidades(unittest.TestCase):
         v = cr.ventaja(v1, a_4h(v1), horas=24)
         self.assertEqual(sorted(v), ["horas", "ninguno"])
         self.assertIn("ultimo", v["ninguno"])
+
+
+class OroYPlata(unittest.TestCase):
+    def _sesiones(self, dias=40):
+        """Velas de 1h de lunes a viernes, con la pausa diaria de 22:00 a 23:00 UTC."""
+        out, t, c = [], 1793664000, 3000.0     # 03-11-2026, martes 00:00 UTC
+        while len(out) < dias * 23:
+            d = datetime.datetime(1970, 1, 1) + datetime.timedelta(seconds=t)
+            abierto = d.weekday() < 4 or (d.weekday() == 4 and d.hour < 22) or (d.weekday() == 6 and d.hour >= 23)
+            if abierto and d.hour != 22:
+                c += 0.5
+                out.append({"t": t, "o": c - 0.5, "h": c + 0.3, "l": c - 0.8, "c": c, "v": 100.0})
+            t += H1
+        return out
+
+    def test_alias_y_simbolos(self):
+        self.assertEqual(cr._monedas(["gold", "TVC:SILVER", "xauusd", "btcusd"]), ["ORO", "PLATA", "ORO", "BTC"])
+        self.assertEqual(cr.simbolo_tv("ORO"), "TVC:GOLD")
+        self.assertEqual(cr.simbolo_tv("BTC"), "BITSTAMP:BTCUSD")
+        self.assertEqual(cr.par("ORO"), "oro")
+
+    def test_cierres_de_mercado_no_son_datos_dudosos(self):
+        v1 = self._sesiones()
+        v4 = cr.agrupar_4h(v1)
+        r = cr.estado_moneda("ORO", v1, v4, v1[-1]["t"] + H1 + 60)
+        self.assertNotEqual(r["ahora"], "NO EVALUABLE", r.get("motivo"))
+        r = cr.estado_moneda("BTC", v1, v4, v1[-1]["t"] + H1 + 60)        # en cripto, un hueco sí lo es
+        self.assertEqual(r["ahora"], "NO EVALUABLE")
+
+    def test_fin_de_semana_no_caduca_el_dato(self):
+        v1 = self._sesiones()
+        lunes = v1[-1]["t"] + 50 * H1
+        r = cr.estado_moneda("ORO", v1, cr.agrupar_4h(v1), lunes)
+        self.assertNotEqual(r["ahora"], "NO EVALUABLE", r.get("motivo"))
+
+    def test_contexto_salta_el_cierre(self):
+        v1 = self._sesiones()
+        v4 = cr.agrupar_4h(v1)
+        mapa = cr.mapa_contexto(v4)
+        lunes = [b for b in v1 if (datetime.datetime(1970, 1, 1) +
+                                   datetime.timedelta(seconds=b["t"])).weekday() == 0][-1]
+        c4, e4 = cr.contexto(v4, lunes["t"], mapa)
+        anterior = [b for b in v4 if b["t"] < lunes["t"] // H4 * H4][-1]
+        self.assertEqual(c4, anterior["c"])
+
+    def test_diarias_por_sesion(self):
+        d = cr.diarias_de(self._sesiones(), cr.DESFASE_SESION, 20)
+        self.assertTrue(d)
+        for b in d:
+            self.assertLess((datetime.datetime(1970, 1, 1) + datetime.timedelta(seconds=b["t"])).weekday(), 5)
+
+    def test_ficha_con_simbolo_de_tradingview(self):
+        f = cr.ficha(1, "ORO", "VENTA", 3454, "1h", "Cierre por debajo", cr.parse_ahora("2026-11-30 20:00"))
+        self.assertIn("Símbolo:     TVC:GOLD", f)
+        self.assertIn("Comprueba el nivel", cr.aviso_materia("ORO", None))
+        self.assertEqual(cr.aviso_materia("ORO", "carpeta"), "")
+        self.assertEqual(cr.aviso_materia("BTC", None), "")
 
 
 class FichasYNoticias(unittest.TestCase):

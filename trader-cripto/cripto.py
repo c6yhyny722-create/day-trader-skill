@@ -24,6 +24,7 @@ Nunca envía órdenes ni crea alertas.
 """
 
 import argparse
+import bisect
 import datetime
 import json
 import math
@@ -132,8 +133,29 @@ def suelo(x, dec):
 
 # ---------------------------------------------------------------- datos
 
+# Oro y plata: no hay velas gratuitas del contado (TVC:GOLD, TVC:SILVER) por hora, así que la
+# regla se calcula con los futuros de COMEX (mismo horario; el contado suele cotizar algo más
+# barato). Los niveles exactos de las fichas hay que comprobarlos en TradingView, o pasar sus
+# velas con --offline (formato de mcp-tv-get-ohlcv).
+MATERIAS = {
+    "ORO": {"yahoo": "GC=F", "tv": "TVC:GOLD", "fuente": "futuros COMEX del oro (GC=F, Yahoo)"},
+    "PLATA": {"yahoo": "SI=F", "tv": "TVC:SILVER", "fuente": "futuros COMEX de la plata (SI=F, Yahoo)"},
+}
+ALIAS = {"GOLD": "ORO", "XAU": "ORO", "XAUUSD": "ORO", "SILVER": "PLATA", "XAG": "PLATA", "XAGUSD": "PLATA"}
+YAHOO_CHART = "https://query2.finance.yahoo.com/v8/finance/chart/%s?interval=60m&range=%s"
+DESFASE_SESION = 2 * 3600   # la sesión del oro empieza a las 22:00/23:00 UTC: cuenta para el día siguiente
+
+
+def es_materia(moneda):
+    return moneda in MATERIAS
+
+
+def simbolo_tv(moneda):
+    return MATERIAS[moneda]["tv"] if moneda in MATERIAS else "BITSTAMP:%sUSD" % moneda
+
+
 def par(moneda):
-    return moneda.lower() + "usd"
+    return moneda.lower() + ("" if moneda in MATERIAS else "usd")
 
 
 def _get(url, timeout=20):
@@ -200,18 +222,53 @@ def bajar_velas(moneda, paso, cuantas):
     return [velas[k] for k in sorted(velas)]
 
 
+def agrupar_4h(v1):
+    """Velas de 4h (bloques UTC) hechas con las de 1h; en mercados con cierres pueden tener
+    menos de 4 velas."""
+    cubos = {}
+    for b in v1:
+        cubos.setdefault(b["t"] // H4 * H4, []).append(b)
+    return [{"t": t, "o": bs[0]["o"], "h": max(x["h"] for x in bs), "l": min(x["l"] for x in bs),
+             "c": bs[-1]["c"], "v": sum(x["v"] for x in bs)} for t, bs in sorted(cubos.items())]
+
+
+def bajar_yahoo(simbolo, horas):
+    rango = "730d" if horas > 24 * 365 else "%dd" % max(5, min(730, horas // 23 + 2))
+    doc = json.loads(_get(YAHOO_CHART % (urllib.request.quote(simbolo), rango)).decode("utf-8"))
+    res = (doc.get("chart") or {}).get("result") or []
+    if not res:
+        raise Error("Yahoo no tiene datos de %s" % simbolo)
+    r = res[0]
+    q = r["indicators"]["quote"][0]
+    velas = []
+    for i, t in enumerate(r.get("timestamp") or []):
+        o, h, l, c, v = (q[k][i] for k in ("open", "high", "low", "close", "volume"))
+        if None in (o, h, l, c) or t % H1:
+            continue
+        velas.append({"t": int(t), "o": o, "h": h, "l": l, "c": c, "v": v or 0})
+    return velas
+
+
 def cargar(moneda, offline=None, horas=1000):
-    """(velas 1h, velas 4h) de la moneda, en vivo o desde offline/<par>-1h.json y -4h.json."""
+    """(velas 1h, velas 4h) de la moneda, en vivo o desde offline/<par>-1h.json y -4h.json
+    (en oro y plata, si falta el de 4h se hace con el de 1h)."""
     if offline:
         res = []
         for tf in ("1h", "4h"):
             ruta = os.path.join(offline, "%s-%s.json" % (par(moneda), tf))
+            if tf == "4h" and es_materia(moneda) and not os.path.exists(ruta):
+                res.append(agrupar_4h(res[0]))
+                continue
             try:
                 with open(ruta, encoding="utf-8") as fh:
                     res.append(normalizar(json.load(fh)))
             except (OSError, ValueError) as e:
                 raise Error("no se pudo leer %s: %s" % (ruta, e))
         return res[0], res[1]
+    if es_materia(moneda):
+        # al menos 60 días, para que la EMA 50 de 4h salga igual en todos los comandos
+        v1 = bajar_yahoo(MATERIAS[moneda]["yahoo"], max(horas, 24 * 60))
+        return v1, agrupar_4h(v1)
     return bajar_velas(moneda, H1, horas), bajar_velas(moneda, H4, max(200, horas // 4 + 120))
 
 
@@ -219,13 +276,14 @@ def cerradas(velas, paso, ahora):
     return [b for b in velas if b["t"] + paso <= ahora]
 
 
-def revisar_velas(velas, paso, ultimas):
+def revisar_velas(velas, paso, ultimas, huecos=True):
     """Problemas en las `ultimas` velas: huecos de tiempo o velas imposibles (máximo por
-    debajo del mínimo, apertura o cierre fuera del rango). Lista vacía si todo cuadra."""
+    debajo del mínimo, apertura o cierre fuera del rango). Lista vacía si todo cuadra.
+    Con huecos=False (oro y plata, que cierran cada día y el fin de semana) no mira huecos."""
     tramo = velas[-ultimas:]
     out = []
     for a, b in zip(tramo, tramo[1:]):
-        if b["t"] - a["t"] != paso:
+        if huecos and b["t"] - a["t"] != paso:
             out.append("falta la vela de las %s" % hora(a["t"] + paso))
     for b in tramo:
         if not (b["l"] <= min(b["o"], b["c"]) and max(b["o"], b["c"]) <= b["h"]) or b["c"] <= 0:
@@ -288,16 +346,24 @@ def indicadores(v1):
 
 # ---------------------------------------------------------------- la regla del script
 
+class _Mapa(dict):
+    orden = ()
+
+
 def mapa_contexto(v4):
     """{inicio de la vela de 4h: (cierre, EMA 50)} calculado una vez."""
     es = ema([b["c"] for b in v4], N_EMA)
-    return {b["t"]: (b["c"], e) for b, e in zip(v4, es)}
+    m = _Mapa((b["t"], (b["c"], e)) for b, e in zip(v4, es))
+    m.orden = sorted(m)
+    return m
 
 
 def contexto(v4, inicio_1h, mapa=None):
-    """(cierre 4h, EMA 50 4h) de la vela de 4h anterior a la que contiene la vela de 1h."""
+    """(cierre 4h, EMA 50 4h) de la última vela de 4h anterior a la que contiene la vela de 1h
+    (en oro y plata, después de un cierre de mercado, la última que hubo)."""
     mapa = mapa if mapa is not None else mapa_contexto(v4)
-    return mapa.get(inicio_1h // H4 * H4 - H4, (None, None))
+    i = bisect.bisect_left(mapa.orden, inicio_1h // H4 * H4) - 1
+    return mapa[mapa.orden[i]] if i >= 0 else (None, None)
 
 
 def senal_en(v1, j, v4, mapa=None):
@@ -350,10 +416,13 @@ def estado_moneda(moneda, v1, v4, ahora, vigencia=24):
     ult = v1[-1]
     retraso = (ahora // H1 * H1) - (ult["t"] + H1)
     res = {"moneda": moneda, "cierre": ult["c"], "cierre_ts": ult["t"] + H1, "retraso_h": max(retraso, 0) / 3600.0}
-    if retraso > 24 * 3600:
-        res.update(ahora="NO EVALUABLE", motivo="el último dato tiene más de 24 h de retraso")
+    continuo = not es_materia(moneda)
+    max_retraso = 24 if continuo else 72        # oro y plata cierran el fin de semana
+    if retraso > max_retraso * 3600:
+        res.update(ahora="NO EVALUABLE", motivo="el último dato tiene más de %d h de retraso" % max_retraso)
         return res
-    problemas = revisar_velas(v1, H1, vigencia + N_RUPTURA + 1) + revisar_velas(v4, H4, N_EMA)
+    problemas = (revisar_velas(v1, H1, vigencia + N_RUPTURA + 1, continuo) +
+                 revisar_velas(v4, H4, N_EMA, continuo))
     if problemas:
         res.update(ahora="NO EVALUABLE", motivo="datos dudosos: " + "; ".join(problemas[:3]))
         return res
@@ -370,7 +439,10 @@ def estado_moneda(moneda, v1, v4, ahora, vigencia=24):
                indicadores=indicadores(v1), atr=atr(v1)[-1])
     # última señal dentro de la vigencia
     ultima = None
-    for j in range(len(v1) - 1, max(N_RUPTURA - 1, len(v1) - 1 - vigencia), -1):
+    desde = ult["t"] - vigencia * H1           # horas reales: en oro y plata hay cierres de mercado
+    for j in range(len(v1) - 1, N_RUPTURA - 1, -1):
+        if v1[j]["t"] <= desde:
+            break
         s = senal_en(v1, j, v4)
         if s:
             ultima = s
@@ -602,32 +674,38 @@ FILTROS = [
 ]
 
 
-def diarias_de(v1):
-    """Velas diarias (día UTC, como el diario de Bitstamp en TradingView) hechas con las de 1h."""
+def diarias_de(v1, desfase=0, minimo=24):
+    """Velas diarias (día UTC, como el diario de Bitstamp en TradingView) hechas con las de 1h.
+    En oro y plata (desfase de 2 h, mínimo 20 velas) cada sesión cuenta para el día en que cierra."""
     dias = {}
     for b in v1:
-        dias.setdefault(b["t"] // 86400 * 86400, []).append(b)
+        dias.setdefault((b["t"] + desfase) // 86400 * 86400, []).append(b)
     out = []
     for t in sorted(dias):
         bs = dias[t]
-        if len(bs) == 24:
+        if len(bs) >= minimo:
             out.append({"t": t, "o": bs[0]["o"], "h": max(x["h"] for x in bs), "l": min(x["l"] for x in bs),
                         "c": bs[-1]["c"], "v": sum(x["v"] for x in bs)})
     return out
 
 
-def datos_filtros(v1):
+def diarias_para(v1, moneda=None):
+    return diarias_de(v1, DESFASE_SESION, 20) if moneda and es_materia(moneda) else diarias_de(v1)
+
+
+def datos_filtros(v1, moneda=None):
     """Lo que necesitan los filtros, calculado una vez."""
     vols = [b["v"] for b in v1]
     vmed = [None if i < 20 else sum(vols[i - 20:i]) / 20.0 for i in range(len(v1))]
-    d = diarias_de(v1)
+    d = diarias_para(v1, moneda)
     cs = [b["c"] for b in d]
     e50 = ema(cs, 50)
     rs = [None] * len(cs)
     for i in range(15, len(cs)):
         rs[i] = rsi(cs[max(0, i - 200):i + 1])
     dia = {b["t"]: (b["c"], e, r) for b, e, r in zip(d, e50, rs)}
-    return {"vmed": vmed, "dia": dia}
+    desfase = DESFASE_SESION if moneda and es_materia(moneda) else 0
+    return {"vmed": vmed, "dia": dia, "dias": sorted(dia), "desfase": desfase}
 
 
 def pasa_filtro(nombre, s, v1, extra):
@@ -639,7 +717,10 @@ def pasa_filtro(nombre, s, v1, extra):
     if nombre == "volumen":
         m = extra["vmed"][s["j"]]
         return m is not None and v1[s["j"]]["v"] > m
-    ayer = extra["dia"].get(s["t"] // 86400 * 86400 - 86400)
+    hoy = (s["t"] + extra.get("desfase", 0)) // 86400 * 86400
+    dias = extra.get("dias") or sorted(extra["dia"])
+    i = bisect.bisect_left(dias, hoy) - 1
+    ayer = extra["dia"][dias[i]] if i >= 0 else None
     if not ayer or ayer[1] is None or ayer[2] is None:
         return False
     c, e, r = ayer
@@ -650,11 +731,11 @@ def pasa_filtro(nombre, s, v1, extra):
     raise Error("filtro desconocido: %s" % nombre)
 
 
-def estudio_filtros(v1, v4, horas=720, coste_pct=0.1, tramos=3, min_ops=30, margen=0.05):
+def estudio_filtros(v1, v4, horas=720, coste_pct=0.1, tramos=3, min_ops=30, margen=0.05, moneda=None):
     """Cada filtro y cada stop (regla y 1,5 ATR), objetivo 2R, en `tramos` periodos seguidos.
     Un filtro se da por bueno solo si mejora a la regla en TODOS los periodos, con margen y
     con al menos `min_ops` operaciones en cada uno."""
-    lista, atrs, extra = senales(v1, v4), atr(v1), datos_filtros(v1)
+    lista, atrs, extra = senales(v1, v4), atr(v1), datos_filtros(v1, moneda)
     t0, t1 = v1[N_RUPTURA]["t"], v1[-1]["t"]
     cortes = [t0 + (t1 - t0) * k // tramos for k in range(tramos + 1)]
     cortes[-1] = t1 + H1 * 10
@@ -761,7 +842,7 @@ def ficha(n, moneda, lado, nivel, marco, condicion, caduca_ts, texto_extra=""):
                                        signo + " " + fmt(nivel), (", " + texto_extra) if texto_extra else "")
     return "\n".join([
         "FICHA %d \u2013 PROPUESTA \u2013 %s" % (n, cab),
-        "Símbolo:     BITSTAMP:%sUSD" % moneda,
+        "Símbolo:     %s" % simbolo_tv(moneda),
         "Operación:   %s" % op,
         "Nivel:       %s" % fmt(nivel),
         "Marco:       %s" % marco,
@@ -847,15 +928,39 @@ def informe(resultados):
             out.append("  Última señal (24 h): " + texto_senal(r["ultima_senal"]))
         if r.get("retraso_h"):
             out.append("  Aviso: el dato llega con %s h de retraso." % fmt(r["retraso_h"], 0))
-    out += ["", "Datos: velas cerradas de Bitstamp, horas de Madrid.", CIERRE]
+    out += ["", texto_datos(resultados), CIERRE]
     return "\n".join(out)
+
+
+def texto_datos(resultados):
+    ms = [r["moneda"] for r in resultados]
+    partes = []
+    if any(not es_materia(m) for m in ms):
+        partes.append("cripto: Bitstamp")
+    for m in ms:
+        if es_materia(m):
+            partes.append("%s: %s" % (m.lower(), MATERIAS[m]["fuente"]))
+    return "Datos: velas cerradas (%s), horas de Madrid." % "; ".join(partes)
+
+
+def aviso_materia(moneda, offline):
+    if not es_materia(moneda) or offline:
+        return ""
+    return ("⚠️ %s: los niveles salen de los %s. %s es el precio al contado y suele estar algo más "
+            "barato (en el oro, unos 30 $). Comprueba el nivel en TradingView antes de crear la alerta, "
+            "o pásame las velas de %s. Las señales y los estudios en R sí valen." % (
+                moneda, MATERIAS[moneda]["fuente"], simbolo_tv(moneda), simbolo_tv(moneda)))
 
 
 # ---------------------------------------------------------------- comandos
 
 def _monedas(lista):
-    ms = [m.upper().replace("USD", "").replace("BITSTAMP:", "") for m in (lista or MONEDAS)]
-    return ms
+    out = []
+    for m in (lista or MONEDAS):
+        m = m.upper().replace("BITSTAMP:", "").replace("TVC:", "")
+        m = ALIAS.get(m, m)
+        out.append(m if m in MATERIAS else m.replace("USD", ""))
+    return out
 
 
 def cmd_escanear(a):
@@ -879,6 +984,8 @@ def cmd_senal(a):
     print(informe([r]).rsplit("\n\nDatos:", 1)[0])
     if r.get("ahora") == "NO EVALUABLE":
         return 1
+    if aviso_materia(m, a.offline):
+        print("\n" + aviso_materia(m, a.offline))
     print("")
     caduca = r["cierre_ts"] + 24 * H1
     if r.get("compra_si") is not None:
@@ -1068,7 +1175,10 @@ def cmd_afondo(a):
     v1, v4 = cerradas(v1, H1, ahora), cerradas(v4, H4, ahora)
     r = estado_moneda(m, v1, v4, ahora)
     out = [informe([r]).rsplit("\n\nDatos:", 1)[0], ""]
-    d = diarias_de(v1)
+    d = diarias_para(v1, m)
+    if aviso_materia(m, a.offline):
+        out += [aviso_materia(m, a.offline), "Los futuros cambian de contrato cada pocos meses: ese salto de precio puede "
+                "crear alguna ruptura falsa en la historia.", ""]
     if len(d) >= 50:
         cs = [b["c"] for b in d]
         e20, e50 = ema(cs, 20)[-1], ema(cs, 50)[-1]
@@ -1091,7 +1201,7 @@ def cmd_afondo(a):
     out += ["", "Horas de más movimiento (Madrid, últimos 90 días): " + ", ".join(
         "%02d:00 (%s, volumen ×%s)" % (h, pct(rg), fmt(vr, 1)) for h, (rg, vr) in top),
         "Horas más tranquilas: " + ", ".join("%02d:00 (%s)" % (h, pct(rg)) for h, (rg, vr) in low)]
-    est = estudio_filtros(v1, v4, a.horas, a.coste)
+    est = estudio_filtros(v1, v4, a.horas, a.coste, moneda=m)
     c = est["cortes"]
     fecha = lambda t: a_madrid(t).strftime("%d/%m/%Y")
     out += ["", "Estudio de la regla con filtros · %s a %s (%s velas de 1h) · objetivo 2R · coste %s · máximo %d h" % (
@@ -1119,10 +1229,10 @@ def cmd_afondo(a):
     return 0
 
 
-def ventaja(v1, v4, horas=720, coste_pct=0.1, tramos=3):
+def ventaja(v1, v4, horas=720, coste_pct=0.1, tramos=3, moneda=None):
     """Cómo le ha ido a la regla en esta moneda: total y último periodo, sin y con el filtro
     de horas. Sirve para ordenar oportunidades, no para cambiar la regla."""
-    lista, atrs, extra = senales(v1, v4), atr(v1), datos_filtros(v1)
+    lista, atrs, extra = senales(v1, v4), atr(v1), datos_filtros(v1, moneda)
     t0, t1 = v1[N_RUPTURA]["t"], v1[-1]["t"]
     ultimo = t0 + (t1 - t0) * (tramos - 1) // tramos
     out = {}
@@ -1164,7 +1274,7 @@ def cmd_oportunidades(a):
             v1, v4 = cargar(m, a.offline, a.dias * 24)
             v1, v4 = cerradas(v1, H1, ahora), cerradas(v4, H4, ahora)
             r = estado_moneda(m, v1, v4, ahora)
-            ops.append(oportunidad(r, ventaja(v1, v4) if r.get("ahora") != "NO EVALUABLE" else None))
+            ops.append(oportunidad(r, ventaja(v1, v4, moneda=m) if r.get("ahora") != "NO EVALUABLE" else None))
         except Error as e:
             ops.append({"moneda": m, "ahora": "NO EVALUABLE", "motivo": str(e), "orden": (3, 99)})
     ops.sort(key=lambda o: o["orden"])
@@ -1193,7 +1303,7 @@ def cmd_oportunidades(a):
         if h.get("n") and n.get("n") and h["R_medio"] > n["R_medio"] + 0.05:
             out.append("%s: con el filtro de horas (15:00 a 19:00, Madrid) la regla sube de %s a %s R en 3 años." % (
                 o["moneda"], rm(n), rm(h)))
-    out += ["", "Datos: velas cerradas de Bitstamp, horas de Madrid. Un estudio del pasado no garantiza el futuro.",
+    out += ["", texto_datos([o for o in ops]) + " Un estudio del pasado no garantiza el futuro.",
             CIERRE]
     print("\n".join(out))
     return 0
@@ -1232,6 +1342,16 @@ def cmd_riesgo(a):
 
 def cmd_precio(a):
     for m in _monedas(a.monedas):
+        if es_materia(m):
+            try:
+                doc = json.loads(_get(YAHOO_CHART % (urllib.request.quote(MATERIAS[m]["yahoo"]), "1d")).decode("utf-8"))
+                meta = doc["chart"]["result"][0]["meta"]
+                print("%s: %s · %s (Madrid) · %s (en %s puede ser algo menor)" % (
+                    m, fmt(float(meta["regularMarketPrice"])), hora(int(meta["regularMarketTime"])),
+                    MATERIAS[m]["fuente"], simbolo_tv(m)))
+            except (Error, KeyError, ValueError, IndexError, TypeError) as e:
+                print("%s: NO EVALUABLE (%s)" % (m, e))
+            continue
         try:
             d = json.loads(_get("%s/ticker/%s/" % (BITSTAMP, par(m))).decode("utf-8"))
             print("%s: %s · %s (Madrid) · Bitstamp" % (m, fmt(float(d["last"])), hora(int(d["timestamp"]))))
@@ -1258,7 +1378,8 @@ def cmd_noticias(a):
                 with open(os.path.join(a.offline, "%s-noticias.xml" % par(m)), "rb") as fh:
                     datos = fh.read()
             else:
-                datos = _get(YAHOO_RSS % m)
+                datos = _get(YAHOO_RSS.replace("%s-USD", "%s") % urllib.request.quote(MATERIAS[m]["yahoo"])
+                             if es_materia(m) else YAHOO_RSS % m)
             items += parse_noticias(datos, m)
         except (Error, OSError) as e:
             errores.append("%s: %s" % (m, e))

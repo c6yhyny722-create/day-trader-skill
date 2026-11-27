@@ -81,6 +81,25 @@ python3 "${CLAUDE_SKILL_DIR}/cripto.py" noticias BTC ETH --horas 12
   `mcp-tv-get-ohlcv` o una lista de velas) en lugar de bajarlos.
 - `--json` en `escanear` y `simular` da los datos completos.
 
+## Oro y plata (TVC:GOLD, TVC:SILVER)
+
+`escanear ORO PLATA`, `senal ORO`, `afondo PLATA`, `oportunidades ORO PLATA`, `precio oro`,
+`noticias ORO`... (también valen GOLD, SILVER, XAUUSD, XAGUSD, TVC:GOLD).
+
+- No hay velas gratuitas por hora del contado, así que la regla se calcula con los **futuros
+  de COMEX** (GC=F, SI=F, Yahoo, unos 2,4 años de velas de 1h). Tienen el mismo horario; el
+  contado suele estar algo más barato (en el oro, unos 30 $).
+- **Las señales y los estudios en R valen; los niveles exactos de las fichas, no.** Cada plan
+  lo avisa: hay que comprobar el nivel en TradingView antes de crear la alerta, o pasar las
+  velas de TVC:GOLD con `--offline` (entonces no sale el aviso).
+- Cierran el fin de semana y una hora cada día: esos huecos no cuentan como datos dudosos, el
+  dato puede tener hasta 72 h de retraso, la última señal se busca en horas reales y el
+  contexto de 4h usa la última vela de 4h que hubo antes.
+- Los días se cuentan por sesión (la que empieza a las 22:00 o 23:00 UTC es del día siguiente).
+- Los futuros cambian de contrato cada pocos meses: ese salto puede crear alguna ruptura falsa
+  en la historia.
+- El símbolo de las fichas es el de TradingView (TVC:GOLD, TVC:SILVER). Las unidades son onzas.
+
 ## Controles contra errores
 
 - **Solo velas cerradas.** La vela en curso nunca confirma.
