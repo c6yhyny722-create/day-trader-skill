@@ -16,7 +16,7 @@ ORDER_PATH = ["trader-scanner", "trader-entry", "trader-exit", "trader-timemachi
               "trader-pelosi", "trader-risk", "trader-broker", "trader-alerts"]
 # this fork's own additions, kept outside the eleven-skill pack (not in the plugin manifest)
 PERSONAL_SKILLS = ["tv-estrategia"]
-PERSONAL_DIRS = ["pine", "backtests"]
+PERSONAL_DIRS = ["pine", "backtests", "trader"]
 V1_ONLY = ["trader-copycat", "trader-screener", "trader-tax", "trader-rebalance"]
 
 
