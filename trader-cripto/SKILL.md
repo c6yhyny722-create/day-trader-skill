@@ -176,7 +176,7 @@ En `fugas` con varios activos, cada uno lleva su marca del mundo real: 🟢 gana
 
 ## Monedas marcadas «ℹ️ solo información»
 
-**LINK, XRP, ZEC y HYPE** están marcadas por el usuario (28/11/2026) como solo información,
+**LINK, XRP, ZEC, HYPE y ADA** están marcadas por el usuario (28/11/2026) como solo información,
 tras salir 🔴 NO OPERAR en la validación de los 33 activos
 (`backtests/validacion-33-activos-2026-11-28/`). La lista está en `SOLO_INFORMACION` en
 `cripto.py` y solo se cambia si el usuario lo pide.

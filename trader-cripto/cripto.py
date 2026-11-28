@@ -590,6 +590,7 @@ SOLO_INFORMACION = {
     "XRP": "validación 28/11/2026: −0,00 R en el mundo real, supera al azar solo en el 68 %",
     "ZEC": "validación 28/11/2026: −0,05 R en el mundo real, gana en 1 de 11 ajustes vecinos",
     "HYPE": "validación 28/11/2026: −0,08 R en el mundo real, gana en 0 de 11 ajustes vecinos",
+    "ADA": "validación 28/11/2026: −0,08 R en el mundo real en 260 operaciones, supera al azar solo en el 26 %",
 }
 MARCA_INFO = "ℹ️ solo información"
 
