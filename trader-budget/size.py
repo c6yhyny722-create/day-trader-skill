@@ -58,6 +58,16 @@ import math
 import os
 import sys
 
+# Windows: a console or pipe in cp1252/cp850 cannot print emojis or some
+# accents, and one such character would kill the whole command. Print UTF-8
+# and replace anything that still cannot be shown.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        if (_stream.encoding or "").lower().replace("-", "") != "utf8":
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 # v2 defaults: the contract's config.example.json. Missing keys fall back to these.
 DEFAULTS = {
     "budget": None,

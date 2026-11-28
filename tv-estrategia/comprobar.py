@@ -32,6 +32,16 @@ import os
 import re
 import sys
 
+# Windows: a console or pipe in cp1252/cp850 cannot print emojis or some
+# accents, and one such character would kill the whole command. Print UTF-8
+# and replace anything that still cannot be shown.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        if (_stream.encoding or "").lower().replace("-", "") != "utf8":
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 INTERVALOS = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "2h": 7200,
               "4h": 14400, "1d": 86400, "1D": 86400, "1w": 604800, "1W": 604800}
 OPS = (">", "<", ">=", "<=", "cruza_arriba", "cruza_abajo")
