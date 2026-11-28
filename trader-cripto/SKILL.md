@@ -36,6 +36,7 @@ para confirmar, horas de Madrid**. Es para estudio e investigación con capital 
 | (nuevo) | Compara stops y objetivos en dos periodos, con costes | `estudiar` |
 | (nuevo) | Estudio a fondo de una moneda con 3 años: diario, niveles, horas, regla y filtros | `afondo MONEDA` |
 | (nuevo) | Las 10 monedas ordenadas por oportunidad (señal activa, cercanía al disparo, ventaja en 3 años) | `oportunidades` |
+| (nuevo) | Diario de operaciones reales en R: deslizamiento, aciertos con su margen, por moneda, hora, día, etiqueta | `diario` |
 | (nuevo) | Validación dura: 10 pruebas y veredicto 🟢 / 🟡 / 🔴 | `validar` |
 | (nuevo) | De backtest a realidad: las 6 fugas paso a paso (diferencial, deslizamiento, retraso, comisión, swap, exceso de operaciones) | `fugas` |
 | trader-budget | Unidades fraccionarias para un % de riesgo, enseñando la cuenta | `tamano` |
@@ -76,6 +77,10 @@ python3 "${CLAUDE_SKILL_DIR}/cripto.py" riesgo --capital 10000 --riesgo 1 --entr
 python3 "${CLAUDE_SKILL_DIR}/cripto.py" precio LINK BTC
 python3 "${CLAUDE_SKILL_DIR}/cripto.py" ficha LINK compra 9.694 --caduca "2026-11-28 20:00"
 python3 "${CLAUDE_SKILL_DIR}/cripto.py" noticias BTC ETH --horas 12
+python3 "${CLAUDE_SKILL_DIR}/cripto.py" diario abrir BTC --lado COMPRA --entrada 91000 --stop 90000 \
+    --objetivo 93000 --plan 90900 --unidades 0.01     # anota una operación real
+python3 "${CLAUDE_SKILL_DIR}/cripto.py" diario cerrar --id 1 --salida 93000
+python3 "${CLAUDE_SKILL_DIR}/cripto.py" diario ver --por moneda --por hora --csv trader/diario.csv
 ```
 
 - `--ahora "AAAA-MM-DD HH:MM"` (hora de Madrid) repite el análisis como si fuera esa hora.
@@ -199,6 +204,29 @@ regla supera al 91-100 % de las entradas al azar, y juntas su margen es de +0,05
 Además: 100 operaciones o más y más de la mitad de los trimestres en positivo. El régimen se
 calcula con el día anterior, sin mirar el futuro. En `afondo` hay un filtro más, «régimen»: no
 operar con el mercado nervioso o en desplome (decidido de antemano, como los demás).
+
+## Diario de operaciones reales: `diario`
+
+Para las operaciones que el usuario hace de verdad (a mano, en Quantfury). Se guarda en
+`trader/diario.json` (en la nube, hay que subirlo al repositorio para no perderlo).
+
+- `abrir MONEDA --lado COMPRA|VENTA --entrada P --stop S` y, si se sabe, `--objetivo`,
+  `--plan` (precio de la señal: mide el deslizamiento), `--unidades` (resultado en $),
+  `--etiqueta` (noticia, perseguida, nervioso...), `--fuera-de-regla`, `--texto`, `--ahora`.
+  Rechaza un stop o un objetivo en el lado equivocado.
+- `cerrar --id N --salida P` (`--comision` en $, `--motivo`; si no, deduce stop, objetivo o a mano).
+- `nota --id N --etiqueta X --texto "..."`.
+- `ver` (`--por moneda|lado|hora|dia|motivo|etiqueta|regla`, `--desde AAAA-MM-DD`, `--csv RUTA`):
+  cada operación con 🟢 COMPRA / 🔴 VENTA, su R y su dinero, y los totales: aciertos con su
+  margen del 95 % (Wilson), R medio con su margen (desde 20 operaciones), R total, resultado en
+  $ y deslizamiento medio. Con menos de 30 operaciones avisa de que aún dicen poco. El CSV va
+  con `;` y decimales con coma, para Excel en español.
+
+R = (salida − entrada) / (entrada − stop), con el signo de la COMPRA o la VENTA, menos la
+comisión en R. La métrica es el R medio, no el % de aciertos. Al compararlo con `validar`, una
+diferencia grande con el R del mundo real dice si el usuario ejecuta peor que la regla
+(deslizamiento, operaciones fuera de la regla, salidas a mano). Idea tomada de la PR 78 del
+repositorio original (diario y deslizamiento), adaptada a operaciones manuales sin bróker.
 
 ## Datos del panel visual: `panel`
 

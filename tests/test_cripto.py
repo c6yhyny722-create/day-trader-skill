@@ -861,3 +861,58 @@ class Comandos(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Diario(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.ruta = os.path.join(self.dir, "diario.json")
+
+    def run_cli(self, *args):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = cr.main(["diario"] + list(args) + ["--archivo", self.ruta])
+        return rc, buf.getvalue()
+
+    def test_compra_al_objetivo_y_venta_al_stop(self):
+        self.run_cli("abrir", "BTC", "--lado", "COMPRA", "--entrada", "91000", "--stop", "90000",
+                     "--objetivo", "93000", "--plan", "90900", "--unidades", "0.01", "--ahora", "2026-11-20 16:05")
+        rc, out = self.run_cli("cerrar", "--id", "1", "--salida", "93000", "--ahora", "2026-11-21 09:00")
+        self.assertEqual(rc, 0)
+        self.assertIn("por objetivo: 2,00 R, 20,00 $", out)
+        self.run_cli("abrir", "LINK", "--lado", "VENTA", "--entrada", "14", "--stop", "14.5", "--ahora", "2026-11-22 10:00")
+        rc, out = self.run_cli("cerrar", "--id", "2", "--salida", "14.5", "--ahora", "2026-11-22 12:00")
+        self.assertIn("por stop: -1,00 R", out)
+        rc, out = self.run_cli("ver", "--por", "moneda")
+        self.assertIn("🟢 COMPRA", out)
+        self.assertIn("🔴 VENTA", out)
+        self.assertIn("R total: 1,0 R", out)
+        self.assertIn("Deslizamiento medio en la entrada: 0,10 R", out)
+
+    def test_rechaza_stop_mal_puesto_y_doble_cierre(self):
+        rc, _ = self.run_cli("abrir", "SOL", "--lado", "COMPRA", "--entrada", "140", "--stop", "141")
+        self.assertEqual(rc, 2)
+        self.run_cli("abrir", "SOL", "--lado", "COMPRA", "--entrada", "140", "--stop", "139")
+        self.run_cli("cerrar", "--id", "1", "--salida", "139.5")
+        rc, _ = self.run_cli("cerrar", "--id", "1", "--salida", "141")
+        self.assertEqual(rc, 2)
+        rc, _ = self.run_cli("cerrar", "--salida", "141")
+        self.assertEqual(rc, 2)
+
+    def test_salida_a_mano_comision_y_csv(self):
+        self.run_cli("abrir", "ETH", "--lado", "COMPRA", "--entrada", "3000", "--stop", "2900", "--objetivo", "3200",
+                     "--unidades", "1", "--fuera-de-regla", "--etiqueta", "noticia")
+        rc, out = self.run_cli("cerrar", "--id", "1", "--salida", "3050", "--comision", "10")
+        self.assertIn("por a mano: 0,40 R", out)                 # 0,5 R menos 10 $ / 100 $
+        ruta_csv = os.path.join(self.dir, "d.csv")
+        rc, out = self.run_cli("ver", "--por", "regla", "--csv", ruta_csv)
+        self.assertIn("fuera de la regla", out)
+        with open(ruta_csv, encoding="utf-8") as fh:
+            texto = fh.read()
+        self.assertIn(";no;noticia;", texto)
+
+    def test_wilson(self):
+        bajo, alto = cr.wilson(10, 20)
+        self.assertLess(bajo, 50)
+        self.assertGreater(alto, 50)
+        self.assertIsNone(cr.wilson(0, 0))
