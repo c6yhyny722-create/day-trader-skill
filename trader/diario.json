@@ -20,6 +20,24 @@
       "salida_ts": 1795791600,
       "comision": null,
       "motivo": "stop"
+    },
+    {
+      "id": 2,
+      "moneda": "DOT",
+      "lado": "VENTA",
+      "entrada": 0.648,
+      "stop": 0.664,
+      "objetivo": 0.6138,
+      "plan": 0.6473,
+      "unidades": null,
+      "entrada_ts": 1795867931,
+      "regla": true,
+      "etiquetas": [
+        "fuera-de-lista"
+      ],
+      "notas": [
+        "Señal real del script (vela 1h de las 13:00). DOT no está entre las 5 monedas operables; DOT es 🟡 frágil en la validación (+0,05 R, supera al azar en el 75 %). Unidades pendientes."
+      ]
     }
   ]
 }
