@@ -5,12 +5,13 @@ de las malas? Mundo real (fugas, entrada en la vela siguiente), 5 monedas, 3 añ
 Datos: archivo público de Binance (data.binance.vision), futuros USDT:
   fundingRate mensual y metrics diario (interés abierto cada 5 min, ratio largos/cortos,
   ratio de compradores/vendedores agresivos). Solo se usa lo publicado ANTES del cierre de la señal.
-Uso: python3 backtests/ideas/funding_oi_2026-11-28.py <carpeta con f/ y m/>
+Uso: python3 backtests/ideas/funding_oi_2026-11-28.py <carpeta con f/ y m/> [x2]
 """
 import sys, os, io, csv, zipfile, time, bisect, datetime as dt
 sys.path.insert(0, "trader-cripto"); import cripto as cr
 
 CARPETA = sys.argv[1]
+X2 = "x2" in sys.argv[2:]   # costes al doble (diferencial, comisión, deslizamiento y swap)
 
 
 def leer_zip(ruta):
@@ -61,7 +62,7 @@ for m in ["BTC", "ETH", "SOL", "DOGE", "XLM"]:
     v1, v4 = cr.cargar(m, None, 1095 * 24)
     v1, v4 = cr.preparar_historia(cr.cerradas(v1, cr.H1, ahora), cr.cerradas(v4, cr.H4, ahora))
     lista = cr.senales(v1, v4); por_ts = {s["cierre_ts"]: s for s in lista}
-    ops = cr.operaciones_reales(v1, lista, 720, cr.fugas_de(m), siguiente=True, moneda=m, spread_variable=True)
+    ops = cr.operaciones_reales(v1, lista, 720, cr.doble_coste(cr.fugas_de(m)) if X2 else cr.fugas_de(m), siguiente=True, moneda=m, spread_variable=True)
     for o in ops:
         s = por_ts[o["ts"]]; ts = s["cierre_ts"]; compra = s["lado"] == "COMPRA"
         x = {"m": m, "ts": ts, "R": o["R"]}
@@ -98,6 +99,7 @@ res.sort(key=lambda x: x["ts"])
 n = len(res); t1, t2 = res[n // 3]["ts"], res[2 * n // 3]["ts"]
 per = lambda x: 0 if x["ts"] < t1 else 1 if x["ts"] < t2 else 2
 media = lambda xs: sum(xs) / len(xs) if xs else float("nan")
+print("COSTES AL DOBLE" if X2 else "Costes normales")
 print(f"operaciones {n}  R medio {media([x['R'] for x in res]):+.3f}")
 claves = ["funding_multitud_igual", "funding_multitud_contra", "oi_24h_sube_3", "oi_24h_baja_3",
           "barrida_1h_oi_-1,5", "ls_multitud_igual", "agresores_a_favor"]
@@ -127,3 +129,17 @@ print(f"\nSin filtro: {media(todo):+.3f} R, {len(todo)} ops, total {sum(todo):+.
 print(f"Quitando multitud igual + barrida: {media(filtrado):+.3f} R, {len(filtrado)} ops, total {sum(filtrado):+.0f} R")
 solo_ag = [x["R"] for x in res if x.get("agresores_a_favor")]
 print(f"Solo con agresores a favor: {media(solo_ag):+.3f} R, {len(solo_ag)} ops, total {sum(solo_ag):+.0f} R")
+
+def caida_max(Rs):
+    pico = acum = peor = 0.0
+    for r in Rs:
+        acum += r; pico = max(pico, acum); peor = min(peor, acum - pico)
+    return peor
+quita = lambda x: x.get("ls_multitud_igual") or x.get("barrida_1h_oi_-1,5")
+for nombre, sel in (("Sin filtro", lambda x: True), ("Sin multitud igual", lambda x: not x.get("ls_multitud_igual")),
+                    ("Sin multitud igual ni barrida", lambda x: not quita(x))):
+    Rs = [x["R"] for x in res if sel(x)]
+    pp = [media([x["R"] for x in res if sel(x) and per(x) == p]) for p in range(3)]
+    ic = cr.intervalo_R(Rs)
+    print(f"{nombre:30s} {media(Rs):+.3f} R  n={len(Rs)}  total {sum(Rs):+.0f} R  caída máx {caida_max(Rs):.1f} R  "
+          f"P {' '.join(f'{v:+.2f}' for v in pp)}  IC ({ic['bajo']:+.2f}, {ic['alto']:+.2f})")
