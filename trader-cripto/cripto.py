@@ -582,6 +582,21 @@ def estado_moneda(moneda, v1, v4, ahora, vigencia=24):
 
 ICONO = {"COMPRA": "🟢", "VENTA": "🔴"}
 
+# Monedas que el usuario ha marcado como SOLO INFORMACIÓN (28/11/2026): se siguen analizando,
+# pero sus señales no son para operar. Motivo: 🔴 NO OPERAR en la validación dura de los 33
+# activos (backtests/validacion-33-activos-2026-11-28). Solo se quita una si el usuario lo pide.
+SOLO_INFORMACION = {
+    "LINK": "validación 28/11/2026: −0,01 R en el mundo real, supera al azar solo en el 62 %",
+    "XRP": "validación 28/11/2026: −0,00 R en el mundo real, supera al azar solo en el 68 %",
+    "ZEC": "validación 28/11/2026: −0,05 R en el mundo real, gana en 1 de 11 ajustes vecinos",
+    "HYPE": "validación 28/11/2026: −0,08 R en el mundo real, gana en 0 de 11 ajustes vecinos",
+}
+MARCA_INFO = "ℹ️ solo información"
+
+
+def solo_info(moneda):
+    return SOLO_INFORMACION.get(str(moneda).upper())
+
 
 def nota_stop(R, a):
     """Distancia del stop en ATR de 1h y aviso si está dentro del ruido o muy lejos."""
@@ -1134,6 +1149,9 @@ def ficha(n, moneda, lado, nivel, marco, condicion, caduca_ts, texto_extra=""):
     else:
         cab, op = "⏸️ ESPERAR", "⏸️ ESPERAR (aviso, no se abre nada)"
     signo = ">" if "encima" in condicion or "alza" in condicion else "<"
+    if solo_info(moneda) and lado in ("COMPRA", "VENTA"):
+        cab = "ℹ️ SOLO INFORMACIÓN (no operar) · " + cab
+        op = op + ", solo información: no operar"
     texto = "%s %s, vela %s %s %s%s" % (cab, moneda, marco, "cierra" if "Cierre" in condicion else "cruza",
                                        signo + " " + fmt(nivel), (", " + texto_extra) if texto_extra else "")
     return "\n".join([
@@ -1177,7 +1195,8 @@ def linea_tabla(r):
     compra = "vela 1h cierra > %s" % fmt(r["compra_si"]) if r.get("compra_si") is not None else "no (4h bajista)"
     venta = "vela 1h cierra < %s" % fmt(r["venta_si"]) if r.get("venta_si") is not None else "no (4h alcista)"
     return "| %s | %s (%s) | %s | %s | %s | %s |" % (
-        r["moneda"], fmt(r["cierre"]), hora(r["cierre_ts"]), etiqueta_ahora(r["ahora"]), compra, venta,
+        r["moneda"], fmt(r["cierre"]), hora(r["cierre_ts"]),
+        etiqueta_ahora(r["ahora"]) + (" · " + MARCA_INFO if solo_info(r["moneda"]) else ""), compra, venta,
         hora(r["cierre_ts"] + 24 * H1))
 
 
@@ -1217,6 +1236,8 @@ def informe(resultados):
         out.append("%s · contexto 4h: cierre %s %s de la EMA 50 (%s): %s." % (
             r["moneda"], fmt(cx["cierre4h"]), "por encima" if cx["alcista"] else "por debajo", fmt(cx["ema50"]),
             "solo se buscan COMPRAS" if cx["alcista"] else "solo se buscan VENTAS"))
+        if solo_info(r["moneda"]):
+            out.append("  %s: no operar sus señales (%s)." % (MARCA_INFO.capitalize(), solo_info(r["moneda"])))
         ind = r.get("indicadores")
         if ind:
             out.append("  1h: RSI %s · MACD %s / señal %s / histograma %s · Bollinger %s (ancho %s) · %s" % (
@@ -1225,7 +1246,8 @@ def informe(resultados):
                 "volumen %s de su media" % pct(100 * ind["vol_rel"], 0) if ind["vol_rel"] is not None
                 else "sin datos de volumen"))
         if r.get("ultima_senal"):
-            out.append("  Última señal (24 h): " + texto_senal(r["ultima_senal"]))
+            out.append("  Última señal (24 h)%s: " % (" [" + MARCA_INFO + "]" if solo_info(r["moneda"]) else "")
+                       + texto_senal(r["ultima_senal"]))
         if r.get("retraso_h"):
             out.append("  Aviso: el dato llega con %s h de retraso." % fmt(r["retraso_h"], 0))
     _PRECISION[0] = previa
@@ -1593,7 +1615,7 @@ def oportunidad(r, vent):
     o["r_lado"] = hist.get("R_medio") if hist.get("n") else None
     activa = r["ahora"].startswith(("COMPRA", "VENTA"))
     sin_ventaja = o["r_lado"] is not None and o["r_lado"] <= 0
-    o["orden"] = (0 if activa else 2 if sin_ventaja else 1, o["dist_atr"] if o["dist_atr"] is not None else 99)
+    o["orden"] = (2.5 if solo_info(r["moneda"]) else 0 if activa else 2 if sin_ventaja else 1, o["dist_atr"] if o["dist_atr"] is not None else 99)
     return o
 
 
@@ -1622,10 +1644,11 @@ def cmd_oportunidades(a):
         dist = "%s (%s ATR)" % (pct(o["dist_pct"], 1), fmt(o["dist_atr"], 1) if o["dist_atr"] is not None else "-")
         v = o["ventaja"]["ninguno"]
         out.append("| %d | %s | %s | %s | %s | %s R | %s R |" % (
-            i, o["moneda"], etiqueta_ahora(o["ahora"]), disparo, dist, rm(v[lado.lower()]), rm(v["ultimo"])))
+            i, o["moneda"], etiqueta_ahora(o["ahora"]) + (" · " + MARCA_INFO if solo_info(o["moneda"]) else ""), disparo, dist, rm(v[lado.lower()]), rm(v["ultimo"])))
     fijar_precision(None)
     out += ["", "Orden: primero las que tienen señal activa; después las que están más cerca de su disparo "
-            "(en ATR de 1h) y cuya regla ha ganado en ese lado en 3 años; al final, las que no han ganado.",
+            "(en ATR de 1h) y cuya regla ha ganado en ese lado en 3 años; después, las que no han ganado; al final, "
+            "las marcadas %s (%s), que no son para operar." % (MARCA_INFO, ", ".join(sorted(SOLO_INFORMACION))),
             "Regla 3 años = resultado medio por operación de la regla en esa moneda y ese lado (COMPRA o VENTA), "
             "con costes. Último año = todas sus operaciones del último año.", ""]
     for o in ops:
@@ -2464,16 +2487,21 @@ def cmd_diario(a):
             raise Error("el objetivo de una %s tiene que estar %s de la entrada" % (lado, "por encima" if largo else "por debajo"))
         moneda = a.moneda.upper()
         moneda = ALIAS.get(moneda, moneda)
+        aviso = solo_info(moneda)
+        if aviso and "solo-informacion" not in (a.etiqueta or []):
+            a.etiqueta = (a.etiqueta or []) + ["solo-informacion"]
         ident = max([o["id"] for o in d["operaciones"]] or [0]) + 1
         o = {"id": ident, "moneda": moneda, "lado": lado, "entrada": a.entrada, "stop": a.stop,
              "objetivo": a.objetivo, "plan": a.plan, "unidades": a.unidades, "entrada_ts": ahora,
-             "regla": not a.fuera_de_regla, "etiquetas": a.etiqueta or [], "notas": [a.texto] if a.texto else []}
+             "regla": not (a.fuera_de_regla or aviso), "etiquetas": a.etiqueta or [], "notas": [a.texto] if a.texto else []}
         d["operaciones"].append(o)
         guardar_diario(ruta, d)
         fijar_precision(moneda)
         print("%s Anotada la operación %d: %s %s a %s, stop %s%s, %s (hora de Madrid)." % (
             ICONO[lado], ident, lado, moneda, fmt(a.entrada), fmt(a.stop),
             ", objetivo %s" % fmt(a.objetivo) if a.objetivo is not None else "", hora(ahora)))
+        if aviso:
+            print("⚠️ %s está marcada %s (%s): se anota como fuera de la regla." % (moneda, MARCA_INFO, aviso))
         if a.plan is not None:
             print("Deslizamiento en la entrada: %s R." % fmt(resultado_diario(dict(o, salida=a.entrada))["desliz_R"], 2))
         print("Al salir: cripto.py diario cerrar %d --salida PRECIO" % ident)
