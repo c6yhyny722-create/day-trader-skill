@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [{ "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/run_skill_tests.py\"", "timeout": 120 }]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "mcp__.*",
+        "hooks": [{ "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/confirm_orders.py\"" }]
+      }
+    ]
+  }
+}
