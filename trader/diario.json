@@ -1,0 +1,25 @@
+{
+  "operaciones": [
+    {
+      "id": 1,
+      "moneda": "DOGE",
+      "lado": "COMPRA",
+      "entrada": 0.058517,
+      "stop": 0.056532,
+      "objetivo": 0.062487,
+      "plan": null,
+      "unidades": null,
+      "entrada_ts": 1795777200,
+      "regla": true,
+      "etiquetas": [],
+      "notas": [
+        "Entrada deducida de las alertas (stop y objetivo 2R); revisar con Quantfury",
+        "Saltó la alerta de stop el 27/11 a las 16:00"
+      ],
+      "salida": 0.056532,
+      "salida_ts": 1795791600,
+      "comision": null,
+      "motivo": "stop"
+    }
+  ]
+}
