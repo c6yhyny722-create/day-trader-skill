@@ -350,6 +350,35 @@ def sin_negociacion(velas):
     return ""
 
 
+VENTANA_PLANAS = 500
+
+
+def recortar_inicio_sin_negociacion(velas, ventana=VENTANA_PLANAS):
+    """Quita el tramo inicial de la historia en que el par apenas se negociaba (recién
+    listado). Devuelve las velas desde el primer tramo de `ventana` velas con menos del 20 %
+    de velas planas; si no hay ninguno, las devuelve todas (y `sin_negociacion` lo dirá)."""
+    if len(velas) <= ventana:
+        return velas
+    planas_acum = [0]
+    for b in velas:
+        planas_acum.append(planas_acum[-1] + (1 if b["h"] == b["l"] else 0))
+    for i in range(0, len(velas) - ventana + 1, 24):
+        if (planas_acum[i + ventana] - planas_acum[i]) / float(ventana) <= MAX_PLANAS:
+            return velas[i:]
+    return velas
+
+
+def preparar_historia(v1, v4):
+    """Historia útil: sin el tramo inicial sin negociación (también en 4h). Error si ni las
+    últimas velas se negocian."""
+    v1 = recortar_inicio_sin_negociacion(v1)
+    if sin_negociacion(v1[-VENTANA_PLANAS:]):
+        raise Error(sin_negociacion(v1[-VENTANA_PLANAS:]))
+    if v1:
+        v4 = [b for b in v4 if b["t"] >= v1[0]["t"] // H4 * H4 - N_EMA * 3 * H4]
+    return v1, v4
+
+
 def revisar_velas(velas, paso, ultimas, huecos=True):
     """Problemas en las `ultimas` velas: huecos de tiempo o velas imposibles (máximo por
     debajo del mínimo, apertura o cierre fuera del rango). Lista vacía si todo cuadra.
@@ -1446,8 +1475,10 @@ def cmd_afondo(a):
     fijar_precision(m)
     v1, v4 = cargar(m, a.offline, a.dias * 24)
     v1, v4 = cerradas(v1, H1, ahora), cerradas(v4, H4, ahora)
-    if sin_negociacion(v1):
-        raise Error("%s: %s" % (m, sin_negociacion(v1)))
+    try:
+        v1, v4 = preparar_historia(v1, v4)
+    except Error as e:
+        raise Error("%s: %s" % (m, e))
     r = estado_moneda(m, v1, v4, ahora)
     out = [informe([r]).rsplit("\n\nDatos:", 1)[0], ""]
     d = diarias_para(v1, m)
@@ -1612,8 +1643,7 @@ def cmd_fugas(a):
         try:
             v1, v4 = cargar(m, a.offline, a.dias * 24)
             v1, v4 = cerradas(v1, H1, ahora), cerradas(v4, H4, ahora)
-            if sin_negociacion(v1):
-                raise Error(sin_negociacion(v1))
+            v1, v4 = preparar_historia(v1, v4)
             f = fugas_de(m)
             for k in ("spread", "comision", "desliz", "swap"):
                 if getattr(a, k) is not None:

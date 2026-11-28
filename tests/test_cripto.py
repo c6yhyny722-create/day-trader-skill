@@ -568,6 +568,23 @@ class Fugas(unittest.TestCase):
         self.assertEqual(cr.tipo_de("ATOM"), "cripto")
         self.assertEqual(cr.MATERIAS["ATOM"]["yahoo"], "ATOM-USD")
 
+    def test_recorta_el_inicio_sin_negociacion(self):
+        v1 = velas_1h(1500)
+        for b in v1[:600]:                     # recién listado: 600 velas planas al principio
+            b["o"] = b["h"] = b["l"] = b["c"] = 100.0
+        util = cr.recortar_inicio_sin_negociacion(v1)
+        self.assertLess(len(util), len(v1))
+        self.assertLessEqual(cr.planas(util), cr.MAX_PLANAS)
+        v1b, v4b = cr.preparar_historia(v1, a_4h(v1))
+        self.assertEqual(v1b[0]["t"], util[0]["t"])
+
+    def test_sin_negociacion_ahora_es_error(self):
+        v1 = velas_1h(1500)
+        for b in v1[-600:]:
+            b["o"] = b["h"] = b["l"] = b["c"] = 100.0
+        with self.assertRaises(cr.Error):
+            cr.preparar_historia(v1, a_4h(v1))
+
     def test_fugas_por_activo(self):
         self.assertEqual(cr.fugas_de("BTC")["swap"], 0.0)
         self.assertGreater(cr.fugas_de("ORO")["swap"], 0)
