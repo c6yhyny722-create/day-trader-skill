@@ -46,6 +46,16 @@ import json
 import os
 import re
 import sys
+
+# Windows: a console or pipe in cp1252/cp850 cannot print emojis or some
+# accents, and one such character would kill the whole command. Print UTF-8
+# and replace anything that still cannot be shown.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        if (_stream.encoding or "").lower().replace("-", "") != "utf8":
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 import time
 import urllib.error
 import urllib.request
@@ -256,7 +266,7 @@ def analyse(companyfacts, quarters=6, name=None):
         rows.append({
             "end": end, "start": base.get("start"),
             "fiscal": "%s %s" % (base.get("fp") or "", base.get("fy") or ""),
-            "derived": any(s[k].get(end, {}).get("derived") for k in ("revenue", "net_income")),
+            "derived": any(s[k].get(end, {}).get("derived") for k in ("revenue", "net_income", "eps_diluted")),
             "revenue": r, "gross_profit": gp, "operating_income": oi, "net_income": ni,
             "eps_diluted": round(eps, 2) if eps is not None else None,
             "gross_margin": margin(gp, r), "operating_margin": margin(oi, r),

@@ -44,7 +44,7 @@ python3 "${CLAUDE_SKILL_DIR}/check.py" --now "2026-10-19 10:15"  # pin the clock
 | `trader/portfolio.json` | cash and holdings; if missing, a fresh account funded with the budget |
 | `trader/prices.json` | a fresh price raises the entry it measures risk from; also values holdings |
 | `trader/state/broker.json` | what was placed today: duplicates, trades per day, daily loss, day trades |
-| `trader/state/risk.json` | the verdicts it writes, with a fingerprint of each exact order |
+| `trader/state/risk.json` | the verdicts it writes, with a fingerprint and a `valid_until` for each order |
 
 ## Entries and exits
 
@@ -71,7 +71,7 @@ batch that is fine order by order but breaks a limit together is caught.
 | stop | (entries) no stop while `require_stop` is true (a bracket `stop_loss_stop_price`, or the order's plan stop); a stop on the wrong side of the entry |
 | loss | (entries) qty x (entry minus stop) over `max_loss_per_trade_usd` |
 | reward:risk | (entries) (target minus entry) / (entry minus stop) under `min_reward_risk` |
-| daily loss | (entries) the max losses at the stops of today's entries, plus this one, over `max_daily_loss_usd` |
+| daily loss | (entries) the max losses at the stops of today's entries, plus this one, over `max_daily_loss_usd`; or a placed entry today has an unknown max loss while this limit is enabled |
 | trades | (entries) `max_trades_per_day` entries already placed today |
 | window | (entries) before `no_entries_before` or after `no_entries_after`, or the market is closed |
 | pdt | (entries, only with `pdt_guard` true) 3 day trades already in the last 5 business days |
@@ -83,14 +83,28 @@ How the numbers work:
 - **The entry it measures from**: the limit price for a limit order. For a
   market order, the HIGHER of the plan's entry and a fresh price from
   `trader/prices.json` (under 15 minutes old). A plan written at 10:15 cannot
-  understate the risk at 10:55 after the price ran up. An older price is not
-  used, and it says so.
+  understate the risk at 10:55 after the price ran up. An older (or
+  future-stamped: check the clock or time zone) price is not used, and it
+  says so; with no plan at all, a market entry with no fresh price is BLOCKed
+  outright rather than sized from a stale one.
+- **A verdict expires**: `valid_until` is the earlier of 15 minutes from the
+  check and, for an entry, the (early-close-adjusted) `no_entries_after`
+  cutoff or the close. trader-broker refuses an expired PASS and asks for
+  check.py again; an exit only ever needs the 15 minutes.
 - **Daily loss** counts the full max loss of every entry placed today, win or
   lose, as trader-broker logged it. Three full-size trades use up a $150 day.
+  A missing, non-finite, negative or otherwise invalid `max_loss` in a placed
+  entry makes the total unknown, not zero. New entries are blocked while the
+  daily limit is enabled: reconcile the log with the actual order and its
+  stop before checking again; never invent a risk amount. Closing trades are
+  still allowed. JSON reports `today.loss_at_risk` as null when unknown,
+  `known_loss_at_risk` as the known subtotal, and `entries_with_unknown_loss`
+  as the count needing reconciliation. A zero daily limit remains disabled.
 - **The window** is New York time, worked out in the tool (daylight saving
-  included), never from the computer's clock zone. Weekends and NYSE holidays
-  are closed. On a 1:00 p.m. early close the window ends 3 hours earlier too.
-  Set both `no_entries_*` to null to switch the window off.
+  included), never from the computer's clock zone. Weekends, NYSE holidays and
+  outside the regular session always block an entry, even with both
+  `no_entries_*` set to null. On a 1:00 p.m. early close, a `no_entries_after`
+  past the early close moves up with it; one already before it stays.
 - **pdt_guard** (off by default) counts a day trade as a symbol bought and
   sold on the same day in the log, plus any entry placed today (it is meant
   to be flat by the close). FINRA removed the $25,000 pattern-day-trader

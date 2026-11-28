@@ -706,6 +706,46 @@ class ValidacionDura(unittest.TestCase):
         malo = dict(bueno, real={"n": 200, "R_medio": -0.1})
         self.assertEqual(cr.veredicto_validacion(malo)[0], "🔴 NO OPERAR")
 
+    def test_margen_de_error(self):
+        self.assertIsNone(cr.intervalo_R([1.0] * 10))
+        ic = cr.intervalo_R([2, -1, -1] * 40)                  # media 0: el margen cruza el 0
+        self.assertLess(ic["bajo"], 0)
+        self.assertGreater(ic["alto"], 0)
+        ic = cr.intervalo_R([2, 2, -1] * 40)                   # media +1: claramente positiva
+        self.assertGreater(ic["bajo"], 0)
+
+    def test_veredicto_con_margen_y_azar(self):
+        bueno = {"real": {"n": 200, "R_medio": 0.12}, "x2": {"n": 200, "R_medio": 0.06}, "pos_vecinos": 11,
+                 "wf": {"trimestres": 12, "positivos": 9}, "bh": {"sharpe": 0.5}, "sharpe": 0.9, "caida_R": 10,
+                 "regla_rota": None, "ic": {"bajo": 0.03, "alto": 0.2},
+                 "azar": {"regla_R": 0.12, "azar_R": 0.0, "percentil": 97.0, "recorridos": 100}}
+        self.assertEqual(cr.veredicto_validacion(bueno)[0], "🟢 SÓLIDA")
+        suerte = dict(bueno, ic={"bajo": -0.05, "alto": 0.29})
+        v, fallos = cr.veredicto_validacion(suerte)
+        self.assertEqual(v, "🟡 FRÁGIL")
+        self.assertTrue(any("suerte" in x for x in fallos))
+        azar = dict(bueno, azar={"regla_R": 0.12, "azar_R": 0.11, "percentil": 60.0, "recorridos": 100})
+        self.assertTrue(any("al azar" in x for x in cr.veredicto_validacion(azar)[1]))
+
+    def test_entradas_al_azar_copian_riesgo_y_direccion(self):
+        import random
+        v1 = velas_1h(500, pendiente=0.01)
+        s = {"lado": "COMPRA", "entrada": 100.0, "stop": 98.0, "zona": (99.0, 100.5), "j": 10}
+        x = cr.entradas_al_azar(v1, [s], random.Random(1))[0]
+        self.assertEqual(x["lado"], "COMPRA")
+        self.assertAlmostEqual((x["entrada"] - x["stop"]) / x["entrada"], 0.02)
+        self.assertAlmostEqual(x["objetivo"], x["entrada"] + cr.OBJETIVO_R * x["R"])
+
+    def test_contra_azar_sin_red(self):
+        v1 = velas_1h(24 * 60, pendiente=0.01)
+        for i in range(0, len(v1), 37):
+            v1[i]["c"] += 0.8
+            v1[i]["h"] = max(v1[i]["h"], v1[i]["c"] + 0.05)
+        az = cr.contra_azar(v1, a_4h(v1), "BTC", recorridos=10)
+        if az:                                                 # puede no haber operaciones cerradas
+            self.assertTrue(0 <= az["percentil"] <= 100)
+            self.assertEqual(az["recorridos"], 10)
+
     def test_filtro_de_regimen(self):
         extra = {"reg": {86400 * 20000: "NERVIOSO", 86400 * 20001: "LATERAL"}}
         extra["reg_dias"] = sorted(extra["reg"])

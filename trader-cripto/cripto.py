@@ -32,6 +32,16 @@ import os
 import random
 import statistics
 import sys
+
+# Windows: a console or pipe in cp1252/cp850 cannot print emojis or some
+# accents, and one such character would kill the whole command. Print UTF-8
+# and replace anything that still cannot be shown.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        if (_stream.encoding or "").lower().replace("-", "") != "utf8":
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 import time
 import urllib.error
 import urllib.request
@@ -1875,6 +1885,63 @@ def umbral_regla_rota(Rs, n=30, recorridos=3000, semilla=7):
             "caida_p95": caidas[int(0.95 * len(caidas))]}
 
 
+def intervalo_R(Rs, recorridos=2000, semilla=11):
+    """Margen de error del R medio: intervalo del 95 % por remuestreo (bootstrap) de las
+    operaciones. Si el extremo bajo no pasa de 0, la ganancia media puede ser suerte."""
+    if len(Rs) < 20:
+        return None
+    rng = random.Random(semilla)
+    n = len(Rs)
+    medias = sorted(sum(rng.choice(Rs) for _ in range(n)) / n for _ in range(recorridos))
+    return {"bajo": medias[int(0.025 * recorridos)], "alto": medias[int(0.975 * recorridos) - 1]}
+
+
+def entradas_al_azar(v1, lista, rng):
+    """Una entrada «a ciegas» por cada señal: misma dirección, mismo riesgo en %, misma zona
+    de entrada relativa y objetivo 2R, pero en una vela elegida al azar de la historia.
+    Sirve para ver si el momento de la ruptura aporta algo o la ganancia viene solo de la
+    dirección y del tamaño del stop."""
+    out, n = [], len(v1)
+    for s in lista:
+        j = rng.randrange(1, n - 1)
+        e = v1[j]["c"]
+        k = e / s["entrada"]
+        largo = s["lado"] == "COMPRA"
+        stop = s["stop"] * k
+        R = abs(e - stop)
+        out.append({"lado": s["lado"], "j": j, "t": v1[j]["t"], "cierre_ts": v1[j]["t"] + H1, "entrada": e,
+                    "stop": stop, "R": R, "zona": (s["zona"][0] * k, s["zona"][1] * k),
+                    "objetivo": e + OBJETIVO_R * R if largo else e - OBJETIVO_R * R})
+    out.sort(key=lambda x: x["j"])
+    return out
+
+
+def contra_azar(v1, v4, moneda, f=None, horas=720, recorridos=100, semilla=23):
+    """La regla frente a entrar al azar (idea del backtest de 496 acciones del repositorio original:
+    la ruptura de apertura no mejoraba a una entrada ciega). Mismo mundo real: fugas, retraso,
+    sin perseguir, sin solaparse. Devuelve el R medio de la regla, la media de las entradas al
+    azar y en qué parte de su reparto cae la regla (0-100)."""
+    f = f or fugas_de(moneda)
+    lista = senales(v1, v4)
+    real = resumen(operaciones_reales(v1, lista, horas, f, siguiente=True, moneda=moneda, spread_variable=True))
+    if not real.get("n") or len(v1) < 50:
+        return None
+    rng = random.Random(semilla)
+    medias = []
+    for _ in range(recorridos):
+        r = resumen(operaciones_reales(v1, entradas_al_azar(v1, lista, rng), horas, f, siguiente=True,
+                                       moneda=moneda, spread_variable=True))
+        if r.get("n"):
+            medias.append(r["R_medio"])
+    if not medias:
+        return None
+    medias.sort()
+    por_debajo = sum(1 for m in medias if m < real["R_medio"])
+    return {"regla_R": real["R_medio"], "azar_R": sum(medias) / len(medias),
+            "azar_p95": medias[min(len(medias) - 1, int(0.95 * len(medias)))],
+            "percentil": 100.0 * por_debajo / len(medias), "recorridos": len(medias)}
+
+
 def validar_activo(m, v1, v4, horas=720):
     f = fugas_de(m)
     base = (N_RUPTURA, N_STOP, N_EMA)
@@ -1893,7 +1960,7 @@ def validar_activo(m, v1, v4, horas=720):
     bh = comprar_y_mantener(v1, desde, hasta)
     reg = por_regimen(ops, regimen_diario(v1, m))
     rr = umbral_regla_rota(Rs)
-    res = {"moneda": m, "real": real, "x2": x2, "vecinos": vecinos, "pos_vecinos": pos_vec, "wf": wf,
+    res = {"Rs": Rs, "ic": intervalo_R(Rs), "azar": contra_azar(v1, v4, m, f, horas), "moneda": m, "real": real, "x2": x2, "vecinos": vecinos, "pos_vecinos": pos_vec, "wf": wf,
            "caida_R": caida_maxima(Rs), "sharpe": sharpe(meses), "rent_pct": sum(Rs), "bh": bh, "regimen": reg,
            "regla_rota": rr, "desde": desde, "hasta": hasta}
     ahora_reg = regimen_diario(v1, m)
@@ -1926,6 +1993,15 @@ def veredicto_validacion(r):
         fallos.append("comprar y mantener ha sido mejor en rentabilidad ajustada al riesgo")
     if real["n"] < 100:
         fallos.append("pocas operaciones (%d)" % real["n"])
+    ic = r.get("ic")
+    if ic and ic["bajo"] <= 0:
+        fallos.append("la ganancia puede ser suerte: con un 95 %% de confianza el R medio está entre %s y %s"
+                      % (fmt(ic["bajo"], 2), fmt(ic["alto"], 2)))
+    az = r.get("azar")
+    if az and az["percentil"] < 90:
+        fallos.append("no supera claramente a entrar al azar (%s R la regla, %s R al azar; mejor que el %s de "
+                      "las pruebas, hace falta el 90 %%)" % (fmt(az["regla_R"], 2), fmt(az["azar_R"], 2),
+                                                             pct(az["percentil"], 0)))
     if r["caida_R"] > 15:
         fallos.append("caída máxima del %s con 1 %% por operación (tope 15 %%)" % pct(r["caida_R"], 0))
     rr = r["regla_rota"]
@@ -1966,6 +2042,12 @@ def informe_validacion(r):
            "", "| Prueba | Resultado |", "|---|---|",
            "| Mundo real (5 fugas) | %s R · %d operaciones · %s aciertos |" % (rm(r["real"]), r["real"].get("n", 0),
                                                                           pct(r["real"].get("acierto", 0), 0)),
+           "| Margen de error del R medio (95 %%) | %s |" % (
+               "%s a %s R" % (fmt(r["ic"]["bajo"], 2), fmt(r["ic"]["alto"], 2)) if r.get("ic") else "-"),
+           "| Contra entrar al azar | %s |" % (
+               "regla %s R · azar %s R · mejor que el %s de %d pruebas" % (
+                   fmt(r["azar"]["regla_R"], 2), fmt(r["azar"]["azar_R"], 2), pct(r["azar"]["percentil"], 0),
+                   r["azar"]["recorridos"]) if r.get("azar") else "-"),
            "| Con el doble de costes | %s R |" % rm(r["x2"]),
            "| Ajustes vecinos que ganan | %d de %d |" % (r["pos_vecinos"], len(VECINOS)),
            "| Trimestres que ganan | %d de %d |" % (r["wf"]["positivos"], r["wf"]["trimestres"]),
@@ -2008,20 +2090,33 @@ def cmd_validar(a):
     if not res:
         raise Error("no hay datos de ninguna moneda")
     out = ["Validación dura de la regla «ruptura 20 + contexto 4h» (mundo real, con las fugas)", "",
-           "| Activo | Veredicto | R real | ×2 costes | Vecinos | Trimestres | Caída máx. | Sharpe regla/B&H | Últimas 30 |",
-           "|---|---|---|---|---|---|---|---|---|"]
+           "| Activo | Veredicto | R real | ×2 costes | Vecinos | Trimestres | Caída máx. | Sharpe regla/B&H | Margen 95 % | vs azar | Últimas 30 |",
+           "|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in sorted(res, key=lambda r: -(r["real"].get("R_medio") or -9)):
         rr, bh = r["regla_rota"], r["bh"] or {}
-        out.append("| %s | %s | %s | %s | %d/%d | %d/%d | %s | %s / %s | %s |" % (
+        ic, az = r.get("ic"), r.get("azar")
+        out.append("| %s | %s | %s | %s | %d/%d | %d/%d | %s | %s / %s | %s | %s | %s |" % (
             r["moneda"], r["veredicto"], fmt(r["real"].get("R_medio", 0), 2),
             fmt(r["x2"].get("R_medio", 0), 2) if r["x2"].get("n") else "-", r["pos_vecinos"], len(VECINOS),
             r["wf"]["positivos"], r["wf"]["trimestres"], pct(r["caida_R"], 0),
             fmt(r["sharpe"], 2) if r["sharpe"] is not None else "-",
             fmt(bh.get("sharpe"), 2) if bh.get("sharpe") is not None else "-",
+            "%s a %s" % (fmt(ic["bajo"], 2), fmt(ic["alto"], 2)) if ic else "-",
+            "mejor que el %s" % pct(az["percentil"], 0) if az else "-",
             ("⚠️ " if rr and rr["ultimas"] < rr["p5"] else "") + (fmt(rr["ultimas"], 1) + " R" if rr else "-")))
+    ganan = [r for r in res if r["real"].get("R_medio", 0) > 0]
+    if len(ganan) >= 2:
+        todas = [x for r in ganan for x in r["Rs"]]
+        ic = intervalo_R(todas)
+        if ic:
+            out += ["", "Todas juntas (%s, %d operaciones): R medio %s, margen 95 %% de %s a %s R. %s" % (
+                ", ".join(r["moneda"] for r in ganan), len(todas), fmt(sum(todas) / len(todas), 2),
+                fmt(ic["bajo"], 2), fmt(ic["alto"], 2),
+                "Juntas, la ventaja no parece suerte." if ic["bajo"] > 0 else
+                "Ni juntas se puede descartar que sea suerte.")]
     out += ["", "🟢 SÓLIDA: gana en el mundo real, aguanta el doble de costes, 7 o más ajustes vecinos ganan, gana en más "
-            "de la mitad de los trimestres, mejor Sharpe que comprar y mantener, 100+ operaciones, caída < 15 % y sin "
-            "señal de regla rota. 🟡 FRÁGIL: gana pero falla alguna. 🔴 NO OPERAR: no gana en el mundo real.", ""]
+            "de la mitad de los trimestres, mejor Sharpe que comprar y mantener, 100+ operaciones, caída < 15 %, "
+            "margen de error por encima de 0, mejor que el 90 % de las entradas al azar y sin señal de regla rota. 🟡 FRÁGIL: gana pero falla alguna. 🔴 NO OPERAR: no gana en el mundo real.", ""]
     for r in res:
         fijar_precision(r["moneda"])
         out += informe_validacion(r) + [""]
@@ -2052,6 +2147,9 @@ def fila_validacion(r):
             "vecinos": r["pos_vecinos"], "vecinos_total": len(VECINOS),
             "trimestres": r["wf"]["positivos"], "trimestres_total": r["wf"]["trimestres"],
             "caida_pct": round(r["caida_R"], 1), "sharpe": redondo(r["sharpe"]), "sharpe_bh": redondo(bh.get("sharpe")),
+            "ic_bajo": redondo((r.get("ic") or {}).get("bajo")), "ic_alto": redondo((r.get("ic") or {}).get("alto")),
+            "azar_R": redondo((r.get("azar") or {}).get("azar_R")),
+            "azar_percentil": redondo((r.get("azar") or {}).get("percentil"), 0),
             "ultimas30_R": redondo(rr.get("ultimas"), 1), "regla_rota": bool(rr and rr["ultimas"] < rr["p5"]),
             "regimen_ahora": (r["regimen_ahora"] or "").lower(),
             "por_que": "; ".join(r["fallos"]) if r["veredicto"] != "🟢 SÓLIDA" else ""}
@@ -2315,7 +2413,7 @@ def main(argv=None):
     comun(s)
     s.set_defaults(fn=cmd_fugas)
 
-    s = sub.add_parser("validar", help="las 8 pruebas duras: costes ×2, vecinos, trimestres, caída, Sharpe, régimen...")
+    s = sub.add_parser("validar", help="las 10 pruebas duras: costes ×2, vecinos, trimestres, caída, Sharpe, margen de error, azar...")
     s.add_argument("monedas", nargs="*")
     s.add_argument("--dias", type=int, default=1095)
     s.add_argument("--horas", type=int, default=720)

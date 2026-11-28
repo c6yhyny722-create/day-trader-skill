@@ -45,7 +45,8 @@ What blocks an entry (on top):
                 cannot understate the risk
   reward:risk   (target - entry) / (entry - stop) under min_reward_risk
   daily loss    the max losses at the stops of today's entries plus this one
-                over max_daily_loss_usd (win or lose, each counts in full)
+                over max_daily_loss_usd (win or lose, each counts in full),
+                or a placed entry today has an unknown max loss in the log
   trades        max_trades_per_day entries already placed today
   window        before no_entries_before or after no_entries_after (New York
                 time), or the market is closed (weekend, NYSE holiday, outside
@@ -63,9 +64,20 @@ import argparse
 import datetime
 import hashlib
 import json
+import math
 import os
 import re
 import sys
+
+# Windows: a console or pipe in cp1252/cp850 cannot print emojis or some
+# accents, and one such character would kill the whole command. Print UTF-8
+# and replace anything that still cannot be shown.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        if (_stream.encoding or "").lower().replace("-", "") != "utf8":
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 
 DEFAULTS = {
     "budget": None, "cash_buffer_pct": 10, "max_position_pct": 75, "max_order_usd": 4000,
@@ -89,7 +101,7 @@ HHMM = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 CENT = 0.005
 FRESH_MINUTES = 15
 REF_WORDS = {"plan": "the plan's entry", "price": "the latest price", "limit": "the limit price",
-             "stop price": "the stop price", "stale price": "an old price"}
+             "stop price": "the stop price"}
 
 NYSE_HOLIDAYS = {
     "2026-01-01": "New Year's Day",
@@ -205,17 +217,23 @@ def hhmm(value, key):
     return datetime.time(int(m.group(1)), int(m.group(2)))
 
 
-def _shift(t, hours):
-    dt = datetime.datetime.combine(datetime.date(2000, 1, 1), t) - datetime.timedelta(hours=hours)
-    return dt.time()
+def early_cutoff(day, t, close):
+    """Same rule as trader-entry/entry.py's early_cutoff: a cutoff after the early close
+    moves up with it (15:30 -> 12:30 before a 1:00 p.m. close); one already before the
+    early close stays as is."""
+    at = datetime.datetime.combine(day, t)
+    close_dt = datetime.datetime.combine(day, close)
+    if at < close_dt:
+        return t
+    moved = at - (datetime.datetime.combine(day, CLOSE) - close_dt)
+    return moved.time() if moved.time() > OPEN else close
 
 
 def window_check(now_et, c):
-    """Reasons an entry cannot be placed now (New York time). Empty when the window is off."""
+    """Reasons an entry cannot be placed now (New York time): closed market or outside the
+    regular session always apply; no_entries_before/after only when configured."""
     before = hhmm(c.get("no_entries_before"), "no_entries_before")
     after = hhmm(c.get("no_entries_after"), "no_entries_after")
-    if before is None and after is None:
-        return [], []
     warns = []
     d, t = now_et.date(), now_et.time().replace(second=0, microsecond=0)
     if d.year not in CALENDAR_YEARS:
@@ -230,9 +248,11 @@ def window_check(now_et, c):
         return ["window: the market is closed (%s New York; the session is %s to %s)"
                 % (stamp, OPEN.strftime("%H:%M"), close.strftime("%H:%M"))], warns
     if close == EARLY and after is not None:
-        after = _shift(after, 3)
-        warns.append("early close at 1:00 p.m. today (%s): no new entries after %s"
-                     % (NYSE_EARLY_CLOSE[d.isoformat()], after.strftime("%H:%M")))
+        adjusted = early_cutoff(d, after, close)
+        if adjusted != after:
+            warns.append("early close at 1:00 p.m. today (%s): no new entries after %s"
+                         % (NYSE_EARLY_CLOSE[d.isoformat()], adjusted.strftime("%H:%M")))
+        after = adjusted
     if before is not None and t < before:
         return ["window: no new entries before %s New York (it is %s)" % (before.strftime("%H:%M"),
                                                                           t.strftime("%H:%M"))], warns
@@ -293,6 +313,16 @@ def _cent(x):
 
 def _p(x):
     return "%.2f" % float(x)
+
+
+def _age_words(age):
+    """A price's age vs "fresh" (see fresh()): too old, or stamped ahead of now_utc, which
+    almost always means the wrong --now or a time-zone mismatch, not a time machine."""
+    if age is None:
+        return "has no timestamp"
+    if age < -60:
+        return "is stamped %.0f minutes in the future (check the clock or time zone)" % (-age / 60.0)
+    return "is older than %d minutes" % FRESH_MINUTES
 
 
 def account(cfg, portfolio, prices):
@@ -387,11 +417,18 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
     count_today = len(done_today)
     entries_today = [r for r in done_today if rec_is_entry(r)]
     loss_today = 0.0
+    unknown_losses = []
     for r in entries_today:
-        ml = _f(r.get("max_loss"))
-        if ml is None:
-            top_warn.append("an entry placed today (%s %s) has no max loss in the log; not counted in "
-                            "the daily loss" % (r.get("side"), r.get("symbol")))
+        raw_loss = r.get("max_loss")
+        try:
+            ml = _f(raw_loss)
+        except OverflowError:
+            ml = None
+        if ml is None or isinstance(raw_loss, bool) or not math.isfinite(ml) or ml < 0:
+            label = "%s %s" % (r.get("side"), r.get("symbol"))
+            unknown_losses.append(label)
+            top_warn.append("an entry placed today (%s) has no valid max loss in the log; total daily "
+                            "risk is unknown" % label)
         else:
             loss_today += ml
     placed_keys = {(str(r.get("symbol", "")).upper(), r.get("side")) for r in done_today}
@@ -403,6 +440,18 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
     if not c.get("paper", True):
         top_warn.append("LIVE account (\"paper\": false): these orders use real money")
     top_warn.extend(win_warns)
+
+    # How long each verdict stays good for trader-broker: 15 minutes everywhere, and for an
+    # entry also no later than the (early-close-adjusted) no_entries_after cutoff or the close.
+    fresh_until = now_utc + datetime.timedelta(minutes=FRESH_MINUTES)
+    d = now_et.date()
+    day_close = EARLY if d.isoformat() in NYSE_EARLY_CLOSE else CLOSE
+    entry_until = eastern_to_utc(datetime.datetime.combine(d, day_close))
+    after_t = hhmm(c.get("no_entries_after"), "no_entries_after")
+    if after_t is not None:
+        cutoff_utc = eastern_to_utc(datetime.datetime.combine(d, early_cutoff(d, after_t, day_close)))
+        entry_until = min(entry_until, cutoff_utc)
+    entry_until = min(entry_until, fresh_until)
 
     def fresh(sym):
         if sym not in prices:
@@ -499,11 +548,12 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                 if live and ref_from == "price" and plan_entry and live > plan_entry + CENT:
                     info.append("%s last %s is above the plan's entry %s: the risk is measured from %s"
                                 % (sym, _p(ref), _p(plan_entry), _p(ref)))
-            elif sym in prices:
-                ref, ref_from = prices[sym], "stale price"
+        price_age = None
+        if live is None and sym in prices and price_times is not None:
+            t = price_times.get(sym)
+            price_age = (now_utc - t).total_seconds() if t else None
         if plan_entry and live is None and sym in prices and price_times is not None and typ == "market":
-            warns.append("the %s price in trader/prices.json is older than %d minutes: not used"
-                         % (sym, FRESH_MINUTES))
+            warns.append("the %s price in trader/prices.json %s: not used" % (sym, _age_words(price_age)))
         q = _f(qty)
         if notional is not None and _f(notional):
             value = _f(notional)
@@ -524,8 +574,12 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             exiting = q <= -held + 1e-9
         kind = "exit" if exiting else "entry"
         if kind == "entry" and value is None and q:
-            later.append("price: no price for %s to size a %s-share order; add it to "
-                         "trader/prices.json (trader-alerts: alerts.py quote %s --write)" % (sym, qty, sym))
+            if plan_entry is None and typ == "market" and sym in prices and price_times is not None:
+                later.append("price: the %s price in trader/prices.json %s: no fresh price to size a "
+                             "market entry" % (sym, _age_words(price_age)))
+            else:
+                later.append("price: no price for %s to size a %s-share order; add it to "
+                             "trader/prices.json (trader-alerts: alerts.py quote %s --write)" % (sym, qty, sym))
 
         # blocked list and size
         if sym in blocked:
@@ -612,8 +666,24 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                     elif min_rr:
                         later.append("reward:risk: no target to measure it against (min_reward_risk %s)"
                                      % _num(min_rr))
+            # A market order fills at the last price, not the plan's entry: when the fresh
+            # price is already through the stop or the target, the trade is over before it
+            # starts. The checks above compare against ref (the higher of plan and price),
+            # so a fallen price hides behind the plan's entry. A stale price stays ignored:
+            # live is None for it, as above.
+            if typ == "market" and live is not None:
+                if stop and ((long and live <= stop + CENT) or (not long and live >= stop - CENT)):
+                    later.append("stop: the last price %s is already at or %s the stop %s"
+                                 % (_p(live), "below" if long else "above", _p(stop)))
+                if target and ((long and live >= target - CENT) or (not long and live <= target + CENT)):
+                    later.append("target: the last price %s is already at or %s the target %s"
+                                 % (_p(live), "above" if long else "below", _p(target)))
             daily = _f(c.get("max_daily_loss_usd"))
-            if daily and max_loss is not None:
+            if daily and unknown_losses:
+                later.append("daily loss: total risk from today's entries is unknown (%s); reconcile "
+                             "the trade log before a new entry (limit %s)"
+                             % (", ".join(unknown_losses), money(daily)))
+            elif daily and max_loss is not None:
                 used = loss_today + batch_loss
                 if used + max_loss > daily + CENT:
                     later.append("daily loss: %s already at risk today plus %s for this one = %s, over your %s "
@@ -640,7 +710,8 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             if daily or cap_t:
                 info.append("today before this: %d of %s trades, %s of %s daily loss"
                             % (len(entries_today) + batch_entries, cap_t or "unlimited",
-                               money(loss_today + batch_loss), money(daily) if daily else "no limit on"))
+                               ("unknown (%s known)" % money(loss_today + batch_loss)) if unknown_losses
+                               else money(loss_today + batch_loss), money(daily) if daily else "no limit on"))
 
         # duplicates and the daily order limit
         key = (sym, side)
@@ -689,11 +760,13 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             "stop": stop, "target": target, "risk_per_share": risk_ps, "max_loss": max_loss,
             "reward_risk": rr, "fingerprint": fingerprint(o), "verdict": verdict,
             "reasons": reasons, "warnings": warns, "info": info,
+            "valid_until": (entry_until if kind == "entry" else fresh_until).strftime("%Y-%m-%dT%H:%M:%SZ"),
         })
 
     return {
         "date": today,
         "now_new_york": now_et.strftime("%Y-%m-%d %H:%M"),
+        "checked_at": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "paper": bool(c.get("paper", True)),
         "results": results,
         "pass": sum(1 for r in results if r["verdict"] == "PASS"),
@@ -701,7 +774,10 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
         "warnings": top_warn,
         "cash_after": round(acct["cash"], 2),
         "today": {"orders_placed": count_today, "entries_placed": len(entries_today),
-                  "loss_at_risk": round(loss_today, 2), "day_trades_5d": pdt_n if c.get("pdt_guard") else None},
+                  "loss_at_risk": None if unknown_losses else round(loss_today, 2),
+                  "known_loss_at_risk": round(loss_today, 2),
+                  "entries_with_unknown_loss": len(unknown_losses),
+                  "day_trades_5d": pdt_n if c.get("pdt_guard") else None},
     }
 
 
@@ -800,8 +876,6 @@ def main(argv=None):
             if d:
                 os.makedirs(d, exist_ok=True)
             rec = dict(res)
-            rec["checked_at"] = datetime.datetime.now(datetime.timezone.utc).replace(
-                microsecond=0, tzinfo=None).strftime("%Y-%m-%dT%H:%M:%SZ")
             rec["orders_file"] = a.orders
             tmp = a.out + ".tmp"
             with open(tmp, "w", encoding="utf-8") as fh:
