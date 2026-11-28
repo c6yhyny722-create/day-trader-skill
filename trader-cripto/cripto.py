@@ -2033,6 +2033,112 @@ def cmd_validar(a):
     return 0
 
 
+# ---------------------------------------------------------------- datos del panel visual
+
+PANEL_ACTIVOS = ("BTC ETH SOL DOGE XRP HYPE ZEC LINK ADA XLM ORO PLATA EURUSD RUNE AVAX THETA DOT NEAR ARB "
+                 "AAVE ATOM UNI INJ LTC FIL GBPUSD USDCAD USDJPY NZDUSD AUDUSD AAPL TSLA MSTR").split()
+PANEL_PRINCIPALES = ["BTC", "ETH", "SOL", "DOGE"]
+NOMBRE_PASO = {"ideal": "Backtest ideal", "costes": "01 Diferencial y 04 comisión", "desliz": "02 Deslizamiento",
+               "retraso": "03 Retraso", "swap": "05 Swap"}
+
+
+def fila_validacion(r):
+    """Una fila de la tabla de validación del panel a partir de `validar_activo`."""
+    bh = r["bh"] or {}
+    rr = r["regla_rota"] or {}
+    redondo = lambda x, n=2: None if x is None else round(x, n)
+    return {"activo": r["moneda"], "veredicto": r["veredicto"], "r_real": redondo(r["real"].get("R_medio")),
+            "r_x2": redondo(r["x2"].get("R_medio")) if r["x2"].get("n") else None,
+            "vecinos": r["pos_vecinos"], "vecinos_total": len(VECINOS),
+            "trimestres": r["wf"]["positivos"], "trimestres_total": r["wf"]["trimestres"],
+            "caida_pct": round(r["caida_R"], 1), "sharpe": redondo(r["sharpe"]), "sharpe_bh": redondo(bh.get("sharpe")),
+            "ultimas30_R": redondo(rr.get("ultimas"), 1), "regla_rota": bool(rr and rr["ultimas"] < rr["p5"]),
+            "regimen_ahora": (r["regimen_ahora"] or "").lower(),
+            "por_que": "; ".join(r["fallos"]) if r["veredicto"] != "🟢 SÓLIDA" else ""}
+
+
+def datos_panel(cargados, recorridos=1000, n=200, muestra=24, semilla=19):
+    """Los 6 conjuntos de datos del panel «Backtest vs mundo real», a partir de
+    {moneda: (v1, v4)} ya preparados. Valida los activos que no pierden en el mundo real."""
+    filas, ops_por, valid = [], {}, []
+    for m, (v1, v4) in cargados.items():
+        pasos = fugas_moneda(v1, v4, m, 720, fugas_de(m))
+        ops_por[m] = pasos
+        ideal, real = resumen(pasos["ideal"]), resumen(pasos["swap"])
+        filas.append({"activo": m, "tipo": tipo_de(m), "marca": marca_real(real), "operaciones": real.get("n", 0),
+                      "aciertos_pct": round(real.get("acierto", 0), 1), "r_real": round(real.get("R_medio", 0), 3),
+                      "r_ideal": round(ideal.get("R_medio", 0), 3), "desde": a_madrid(v1[0]["t"]).strftime("%Y-%m-%d")})
+        if real.get("n") and real["R_medio"] > -0.02:
+            try:
+                valid.append(fila_validacion(validar_activo(m, v1, v4)))
+            except Error:
+                pass
+    filas.sort(key=lambda f: -f["r_real"])
+    valid.sort(key=lambda f: -(f["r_real"] or -9))
+    princ = [m for m in PANEL_PRINCIPALES if m in ops_por]
+    pasos_rows = []
+    for orden, (p, _) in enumerate(PASOS_FUGAS):
+        r = resumen([o for m in princ for o in ops_por[m][p]])
+        pasos_rows.append({"orden": orden + 1, "paso": NOMBRE_PASO[p], "clave": p, "operaciones": r.get("n", 0),
+                           "aciertos_pct": round(r.get("acierto", 0), 1), "r_medio": round(r.get("R_medio", 0), 3),
+                           "resultado_pct": round(r.get("R_total", 0), 1)})
+    r = resumen([o for _, o in cartera({m: ops_por[m]["swap"] for m in princ})])
+    pasos_rows.append({"orden": 6, "paso": "06 Límite de cartera", "clave": "cartera", "operaciones": r.get("n", 0),
+                       "aciertos_pct": round(r.get("acierto", 0), 1), "r_medio": round(r.get("R_medio", 0), 3),
+                       "resultado_pct": round(r.get("R_total", 0), 1)})
+    rng = random.Random(semilla)
+    bandas, caminos = [], []
+    for mundo, clave in (("Backtest", "ideal"), ("Mundo real", "swap")):
+        Rs = [o["R"] for m in princ for o in ops_por[m][clave]]
+        if not Rs:
+            continue
+        curvas = []
+        for _ in range(recorridos):
+            eq, curva = 0.0, [0.0]
+            for _ in range(n):
+                eq += rng.choice(Rs)
+                curva.append(eq)
+            curvas.append(curva)
+        for i in range(0, n + 1, 4):
+            col = sorted(cv[i] for cv in curvas)
+            q = lambda f: round(col[min(len(col) - 1, int(f * len(col)))], 2)
+            bandas.append({"mundo": mundo, "operacion": i, "p05": q(.05), "p25": q(.25), "p50": q(.5),
+                           "p75": q(.75), "p95": q(.95)})
+        for k in range(muestra):
+            for i in range(0, n + 1, 4):
+                caminos.append({"mundo": mundo, "camino": k, "operacion": i, "resultado_pct": round(curvas[k][i], 2)})
+    sup = [{"activo": k, "diferencial_pct": v["spread"], "comision_pct": v["comision"],
+            "deslizamiento_pct": v["desliz"], "swap_noche_pct": v["swap"]}
+           for k, v in (("Cripto", FUGAS_CRIPTO), ("Oro y plata", FUGAS["ORO"]),
+                        ("EUR/USD y GBP/USD", FUGAS["EURUSD"]), ("Acciones", FUGAS_ACCION))]
+    return {"activos": filas, "pasos": pasos_rows, "bandas": bandas, "caminos": caminos, "supuestos": sup,
+            "validacion": valid}
+
+
+def cmd_panel(a):
+    """Escribe en --salida los archivos del panel (activos, pasos, bandas, caminos, supuestos,
+    validacion .json) para subirlos al panel visual."""
+    ahora = parse_ahora(a.ahora)
+    cargados, faltan = {}, []
+    for m in _monedas(a.monedas or PANEL_ACTIVOS):
+        try:
+            v1, v4 = cargar(m, a.offline, a.dias * 24)
+            cargados[m] = preparar_historia(cerradas(v1, H1, ahora), cerradas(v4, H4, ahora))
+        except Error as e:
+            faltan.append("%s (%s)" % (m, e))
+    if not cargados:
+        raise Error("no hay datos de ninguna moneda")
+    datos = datos_panel(cargados)
+    os.makedirs(a.salida, exist_ok=True)
+    for nombre, filas in datos.items():
+        with open(os.path.join(a.salida, nombre + ".json"), "w", encoding="utf-8") as fh:
+            json.dump(filas, fh, ensure_ascii=False)
+    print("Panel: %d activos, %d validados · archivos en %s" % (len(datos["activos"]), len(datos["validacion"]), a.salida))
+    for x in faltan:
+        print("Sin datos de " + x)
+    return 0
+
+
 def cmd_tamano(a):
     if a.moneda:
         fijar_precision(_monedas([a.moneda])[0])
@@ -2215,6 +2321,13 @@ def main(argv=None):
     s.add_argument("--horas", type=int, default=720)
     comun(s)
     s.set_defaults(fn=cmd_validar)
+
+    s = sub.add_parser("panel", help="datos del panel visual «Backtest vs mundo real»")
+    s.add_argument("monedas", nargs="*")
+    s.add_argument("--salida", required=True, help="carpeta donde escribir los .json")
+    s.add_argument("--dias", type=int, default=1095)
+    comun(s)
+    s.set_defaults(fn=cmd_panel)
 
     s = sub.add_parser("tamano", help="unidades para un % de riesgo")
     s.add_argument("--capital", type=float, required=True)

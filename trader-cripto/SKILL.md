@@ -190,6 +190,14 @@ Además: 100 operaciones o más y más de la mitad de los trimestres en positivo
 calcula con el día anterior, sin mirar el futuro. En `afondo` hay un filtro más, «régimen»: no
 operar con el mercado nervioso o en desplome (decidido de antemano, como los demás).
 
+## Datos del panel visual: `panel`
+
+`panel --salida CARPETA` escribe los 6 archivos del panel «Backtest vs mundo real»
+(activos, pasos, bandas, caminos, supuestos y validacion, en .json) con los 33 activos: el
+mundo real de cada uno, los pasos de las fugas de BTC, ETH, SOL y DOGE, el Monte Carlo de dos
+mundos y la validación dura de los activos que no pierden. Tarda unos 15-20 minutos. La
+revisión semanal lo usa para refrescar el panel.
+
 ## Costes por activo
 
 Por defecto, ida y vuelta: cripto 0,1 %, oro y plata 0,05 %, EUR/USD, GBP/USD y USD/JPY

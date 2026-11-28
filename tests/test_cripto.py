@@ -723,6 +723,31 @@ class ValidacionDura(unittest.TestCase):
         self.assertLessEqual(otra["stop"], base["stop"])            # 12 velas de stop: mínimo más bajo o igual
 
 
+class Panel(unittest.TestCase):
+    def test_datos_del_panel_sin_red(self):
+        v1 = velas_1h(24 * 120, pendiente=0.01)
+        for i in range(0, len(v1), 37):                 # algún salto para que haya señales
+            v1[i]["c"] += 0.8
+            v1[i]["h"] = max(v1[i]["h"], v1[i]["c"] + 0.05)
+        datos = cr.datos_panel({"BTC": (v1, a_4h(v1))}, recorridos=50, n=20, muestra=3)
+        self.assertEqual(sorted(datos), ["activos", "bandas", "caminos", "pasos", "supuestos", "validacion"])
+        self.assertEqual(datos["activos"][0]["activo"], "BTC")
+        self.assertEqual([p["clave"] for p in datos["pasos"]], ["ideal", "costes", "desliz", "retraso", "swap", "cartera"])
+        self.assertEqual(len(datos["supuestos"]), 4)
+        json.dumps(datos)                                 # se puede guardar tal cual
+
+    def test_fila_validacion(self):
+        r = {"moneda": "BTC", "veredicto": "🟡 FRÁGIL", "real": {"n": 200, "R_medio": 0.1234},
+             "x2": {"n": 200, "R_medio": 0.05}, "pos_vecinos": 9, "wf": {"positivos": 8, "trimestres": 12},
+             "caida_R": 12.34, "sharpe": 0.9, "bh": {"sharpe": 0.5}, "regla_rota": {"ultimas": -9, "p5": -8},
+             "regimen_ahora": "LATERAL", "fallos": ["algo"]}
+        f = cr.fila_validacion(r)
+        self.assertEqual(f["r_real"], 0.12)
+        self.assertTrue(f["regla_rota"])
+        self.assertEqual(f["regimen_ahora"], "lateral")
+        self.assertEqual(f["por_que"], "algo")
+
+
 class FichasYNoticias(unittest.TestCase):
     def test_ficha_con_los_ocho_campos(self):
         f = cr.ficha(1, "LINK", "COMPRA", 9.694, "1h", "Cierre por encima", cr.parse_ahora("2026-11-28 20:00"))
