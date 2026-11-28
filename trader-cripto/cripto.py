@@ -25,6 +25,7 @@ Nunca envía órdenes ni crea alertas.
 
 import argparse
 import bisect
+import csv
 import datetime
 import json
 import math
@@ -2338,6 +2339,246 @@ def cmd_noticias(a):
     return 0
 
 
+# ---------------------------------------------------------------- diario de operaciones reales
+
+DIARIO = os.path.join("trader", "diario.json")
+POR_DIARIO = ("moneda", "lado", "hora", "dia", "motivo", "etiqueta", "regla")
+POCAS_DIARIO = 30
+
+
+def leer_diario(ruta):
+    if not os.path.exists(ruta):
+        return {"operaciones": []}
+    try:
+        with open(ruta, encoding="utf-8") as fh:
+            d = json.load(fh)
+    except ValueError as e:
+        raise Error("%s no es un JSON válido: %s" % (ruta, e))
+    d.setdefault("operaciones", [])
+    return d
+
+
+def guardar_diario(ruta, d):
+    carpeta = os.path.dirname(ruta)
+    if carpeta:
+        os.makedirs(carpeta, exist_ok=True)
+    tmp = ruta + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(d, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+    os.replace(tmp, ruta)
+
+
+def _op_diario(d, ident):
+    for o in d["operaciones"]:
+        if o["id"] == ident:
+            return o
+    raise Error("no hay ninguna operación con el número %s en el diario" % ident)
+
+
+def wilson(k, n, z=1.96):
+    """Intervalo del 95 % de un porcentaje de aciertos (Wilson), en %."""
+    if not n:
+        return None
+    p = k / float(n)
+    den = 1 + z * z / n
+    centro = (p + z * z / (2 * n)) / den
+    ancho = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / den
+    return 100 * max(0.0, centro - ancho), 100 * min(1.0, centro + ancho)
+
+
+def resultado_diario(o):
+    """R real de una operación cerrada: (salida − entrada) / riesgo planeado, con signo según
+    el lado, menos la comisión en R. Riesgo = |entrada − stop|. El deslizamiento es lo que la
+    entrada real fue peor que el precio del plan (en R; positivo = peor)."""
+    largo = o["lado"] == "COMPRA"
+    riesgo = abs(o["entrada"] - o["stop"])
+    signo = 1 if largo else -1
+    r = signo * (o["salida"] - o["entrada"]) / riesgo
+    dinero = signo * (o["salida"] - o["entrada"]) * o["unidades"] if o.get("unidades") else None
+    com = o.get("comision") or 0.0
+    if com and o.get("unidades"):
+        r -= com / (riesgo * o["unidades"])
+        dinero -= com
+    desliz = None
+    if o.get("plan") is not None:
+        desliz = signo * (o["entrada"] - o["plan"]) / riesgo
+    return {"R": r, "dinero": dinero, "desliz_R": desliz}
+
+
+def clave_diario(o, por):
+    m = a_madrid(o["entrada_ts"])
+    if por == "hora":
+        return "%02d:00" % m.hour
+    if por == "dia":
+        return DIAS[m.weekday()]
+    if por == "regla":
+        return "de la regla" if o.get("regla", True) else "fuera de la regla"
+    if por == "etiqueta":
+        return ", ".join(sorted(o.get("etiquetas") or [])) or "(sin etiqueta)"
+    return str(o.get(por) or "-")
+
+
+def totales_diario(ops):
+    Rs = [x["R"] for x in ops]
+    n = len(Rs)
+    gan = sum(1 for r in Rs if r > 0)
+    t = {"n": n, "acierto": 100.0 * gan / n, "rango_acierto": wilson(gan, n), "R_medio": sum(Rs) / n,
+         "R_total": sum(Rs), "ic": intervalo_R(Rs)}
+    dl = [x["desliz_R"] for x in ops if x.get("desliz_R") is not None]
+    t["desliz_R"] = sum(dl) / len(dl) if dl else None
+    di = [x["dinero"] for x in ops if x.get("dinero") is not None]
+    t["dinero"] = sum(di) if di else None
+    return t
+
+
+def lineas_totales(t, titulo):
+    ra = t["rango_acierto"]
+    out = ["**%s** · %d operaciones" % (titulo, t["n"]),
+           "- Aciertos: %s (con un 95 %% de confianza, entre %s y %s)" % (pct(t["acierto"], 0), pct(ra[0], 0), pct(ra[1], 0)),
+           "- R medio: %s R%s" % (fmt(t["R_medio"], 2), " (margen 95 %%: %s a %s R)" % (
+               fmt(t["ic"]["bajo"], 2), fmt(t["ic"]["alto"], 2)) if t["ic"] else " (aún sin margen: menos de 20)"),
+           "- R total: %s R" % fmt(t["R_total"], 1)]
+    if t["dinero"] is not None:
+        out.append("- Resultado en dinero: %s $" % fmt(t["dinero"], 2))
+    if t["desliz_R"] is not None:
+        out.append("- Deslizamiento medio en la entrada: %s R (%s)" % (
+            fmt(t["desliz_R"], 2), "peor que el plan" if t["desliz_R"] > 0 else "igual o mejor que el plan"))
+    return out
+
+
+def cmd_diario(a):
+    ruta = a.archivo
+    d = leer_diario(ruta)
+    ahora = parse_ahora(a.ahora)
+    if a.accion == "abrir":
+        if not a.moneda or a.entrada is None or a.stop is None or not a.lado:
+            raise Error("para abrir hacen falta la moneda, --lado, --entrada y --stop")
+        lado = a.lado.upper()
+        if lado not in ("COMPRA", "VENTA"):
+            raise Error("--lado debe ser COMPRA o VENTA")
+        largo = lado == "COMPRA"
+        if (largo and a.stop >= a.entrada) or (not largo and a.stop <= a.entrada):
+            raise Error("el stop de una %s tiene que estar %s de la entrada" % (lado, "por debajo" if largo else "por encima"))
+        if a.objetivo is not None and ((largo and a.objetivo <= a.entrada) or (not largo and a.objetivo >= a.entrada)):
+            raise Error("el objetivo de una %s tiene que estar %s de la entrada" % (lado, "por encima" if largo else "por debajo"))
+        moneda = a.moneda.upper()
+        moneda = ALIAS.get(moneda, moneda)
+        ident = max([o["id"] for o in d["operaciones"]] or [0]) + 1
+        o = {"id": ident, "moneda": moneda, "lado": lado, "entrada": a.entrada, "stop": a.stop,
+             "objetivo": a.objetivo, "plan": a.plan, "unidades": a.unidades, "entrada_ts": ahora,
+             "regla": not a.fuera_de_regla, "etiquetas": a.etiqueta or [], "notas": [a.texto] if a.texto else []}
+        d["operaciones"].append(o)
+        guardar_diario(ruta, d)
+        fijar_precision(moneda)
+        print("%s Anotada la operación %d: %s %s a %s, stop %s%s, %s (hora de Madrid)." % (
+            ICONO[lado], ident, lado, moneda, fmt(a.entrada), fmt(a.stop),
+            ", objetivo %s" % fmt(a.objetivo) if a.objetivo is not None else "", hora(ahora)))
+        if a.plan is not None:
+            print("Deslizamiento en la entrada: %s R." % fmt(resultado_diario(dict(o, salida=a.entrada))["desliz_R"], 2))
+        print("Al salir: cripto.py diario cerrar %d --salida PRECIO" % ident)
+        print(CIERRE)
+        return 0
+    if a.accion in ("cerrar", "nota") and a.id is None:
+        raise Error("falta --id con el número de la operación (míralo con: cripto.py diario ver)")
+    if a.accion == "cerrar":
+        o = _op_diario(d, a.id)
+        if o.get("salida") is not None:
+            raise Error("la operación %d ya está cerrada" % a.id)
+        if a.salida is None:
+            raise Error("falta --salida")
+        if ahora < o["entrada_ts"]:
+            raise Error("la hora de salida es anterior a la de entrada")
+        o["salida"], o["salida_ts"], o["comision"] = a.salida, ahora, a.comision
+        if a.motivo:
+            o["motivo"] = a.motivo
+        else:
+            largo = o["lado"] == "COMPRA"
+            if o.get("objetivo") is not None and (a.salida >= o["objetivo"] if largo else a.salida <= o["objetivo"]):
+                o["motivo"] = "objetivo"
+            elif a.salida <= o["stop"] if largo else a.salida >= o["stop"]:
+                o["motivo"] = "stop"
+            else:
+                o["motivo"] = "a mano"
+        if a.texto:
+            o.setdefault("notas", []).append(a.texto)
+        guardar_diario(ruta, d)
+        r = resultado_diario(o)
+        fijar_precision(o["moneda"])
+        print("Cerrada la operación %d (%s %s) a %s por %s: %s R%s." % (
+            o["id"], o["lado"], o["moneda"], fmt(a.salida), o["motivo"], fmt(r["R"], 2),
+            ", %s $" % fmt(r["dinero"], 2) if r["dinero"] is not None else ""))
+        print(CIERRE)
+        return 0
+    if a.accion == "nota":
+        o = _op_diario(d, a.id)
+        o.setdefault("etiquetas", [])
+        o["etiquetas"] = sorted(set(o["etiquetas"]) | set(a.etiqueta or []))
+        if a.texto:
+            o.setdefault("notas", []).append(a.texto)
+        guardar_diario(ruta, d)
+        print("Nota guardada en la operación %d." % o["id"])
+        return 0
+    # ver
+    desde = parse_ahora(a.desde + " 00:00") if a.desde else None
+    cerradas, abiertas = [], []
+    for o in d["operaciones"]:
+        if desde and o["entrada_ts"] < desde:
+            continue
+        if o.get("salida") is None:
+            abiertas.append(o)
+        else:
+            cerradas.append(dict(o, **resultado_diario(o)))
+    out = ["# Diario de operaciones reales", ""]
+    if not cerradas and not abiertas:
+        out.append("El diario está vacío. Anota una con: cripto.py diario abrir BTC --lado COMPRA --entrada P --stop S")
+        print("\n".join(out))
+        return 0
+    if cerradas:
+        out += ["| # | Señal | Moneda | Entrada (Madrid) | Entrada | Salida | Motivo | R | $ |", "|---|---|---|---|---|---|---|---|---|"]
+        for o in sorted(cerradas, key=lambda x: x["entrada_ts"]):
+            fijar_precision(o["moneda"])
+            out.append("| %d | %s %s | %s | %s | %s | %s | %s | %s | %s |" % (
+                o["id"], ICONO[o["lado"]], o["lado"], o["moneda"], hora(o["entrada_ts"]), fmt(o["entrada"]),
+                fmt(o["salida"]), o.get("motivo", "-"), fmt(o["R"], 2),
+                fmt(o["dinero"], 2) if o["dinero"] is not None else "-"))
+        fijar_precision(None)
+        out += [""] + lineas_totales(totales_diario(cerradas), "Todas")
+        if len(cerradas) < POCAS_DIARIO:
+            out.append("⚠️ Menos de %d operaciones: los números aún dicen poco. Mira los márgenes." % POCAS_DIARIO)
+        for por in a.por or []:
+            grupos = {}
+            for o in cerradas:
+                grupos.setdefault(clave_diario(o, por), []).append(o)
+            out += ["", "Por %s:" % por, "| %s | Operaciones | Aciertos | R medio | R total |" % por.capitalize(),
+                    "|---|---|---|---|---|"]
+            for k in sorted(grupos, key=lambda k: -sum(x["R"] for x in grupos[k])):
+                t = totales_diario(grupos[k])
+                out.append("| %s | %d | %s | %s | %s |" % (k, t["n"], pct(t["acierto"], 0), fmt(t["R_medio"], 2),
+                                                          fmt(t["R_total"], 1)))
+        if a.csv:
+            carpeta = os.path.dirname(a.csv)
+            if carpeta:
+                os.makedirs(carpeta, exist_ok=True)
+            campos = ["id", "moneda", "lado", "entrada_madrid", "entrada", "stop", "objetivo", "plan", "unidades",
+                      "salida_madrid", "salida", "motivo", "comision", "R", "dinero", "desliz_R", "regla", "etiquetas", "notas"]
+            with open(a.csv, "w", newline="", encoding="utf-8") as fh:
+                w = csv.writer(fh, delimiter=";")
+                w.writerow(campos)
+                for o in sorted(cerradas, key=lambda x: x["entrada_ts"]):
+                    fila = dict(o, entrada_madrid=hora(o["entrada_ts"]), salida_madrid=hora(o["salida_ts"]),
+                                regla="sí" if o.get("regla", True) else "no", etiquetas=", ".join(o.get("etiquetas") or []), notas=" | ".join(o.get("notas") or []))
+                    w.writerow([str(fila.get(c, "")).replace(".", ",") if isinstance(fila.get(c), float) else
+                                ("" if fila.get(c) is None else fila.get(c)) for c in campos])
+            out += ["", "CSV guardado en %s (separado por ;, decimales con coma, para Excel en español)." % a.csv]
+    if abiertas:
+        out += ["", "Abiertas: " + "; ".join("%d %s %s %s desde %s" % (
+            o["id"], ICONO[o["lado"]], o["lado"], o["moneda"], hora(o["entrada_ts"])) for o in abiertas)]
+    out += ["", CIERRE]
+    print("\n".join(out))
+    return 0
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description="Las habilidades del paquete adaptadas a cripto (solo simulación).")
     sub = p.add_subparsers(dest="cmd")
@@ -2469,6 +2710,29 @@ def main(argv=None):
     s.add_argument("--offline")
     s.add_argument("--ahora")
     s.set_defaults(fn=cmd_noticias)
+
+    s = sub.add_parser("diario", help="diario de operaciones reales: abrir, cerrar, nota, ver")
+    s.add_argument("accion", choices=("abrir", "cerrar", "nota", "ver"))
+    s.add_argument("moneda", nargs="?", help="con abrir: la moneda (BTC, LINK, ORO...)")
+    s.add_argument("--id", type=int, help="con cerrar y nota: el número de la operación")
+    s.add_argument("--lado", help="COMPRA o VENTA")
+    s.add_argument("--entrada", type=float, help="precio al que entraste de verdad")
+    s.add_argument("--stop", type=float)
+    s.add_argument("--objetivo", type=float)
+    s.add_argument("--plan", type=float, help="precio de entrada de la señal, para medir el deslizamiento")
+    s.add_argument("--unidades", type=float, help="unidades compradas o vendidas, para el resultado en dinero")
+    s.add_argument("--salida", type=float)
+    s.add_argument("--motivo", help="stop, objetivo o a mano (si no, se deduce del precio)")
+    s.add_argument("--comision", type=float, help="comisión total en $ (Quantfury: 0)")
+    s.add_argument("--fuera-de-regla", action="store_true", help="la operación no siguió la regla")
+    s.add_argument("--etiqueta", action="append", help="p. ej. noticia, perseguida, nervioso (se puede repetir)")
+    s.add_argument("--texto", help="una nota libre")
+    s.add_argument("--por", action="append", choices=POR_DIARIO, help="agrupar el informe (se puede repetir)")
+    s.add_argument("--desde", help="AAAA-MM-DD")
+    s.add_argument("--csv", help="guardar también en CSV")
+    s.add_argument("--archivo", default=DIARIO)
+    s.add_argument("--ahora", help="hora de Madrid AAAA-MM-DD HH:MM (por defecto, ahora)")
+    s.set_defaults(fn=cmd_diario)
 
     a = p.parse_args(argv)
     if not getattr(a, "fn", None):
