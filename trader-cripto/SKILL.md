@@ -36,6 +36,7 @@ para confirmar, horas de Madrid**. Es para estudio e investigación con capital 
 | (nuevo) | Compara stops y objetivos en dos periodos, con costes | `estudiar` |
 | (nuevo) | Estudio a fondo de una moneda con 3 años: diario, niveles, horas, regla y filtros | `afondo MONEDA` |
 | (nuevo) | Las 10 monedas ordenadas por oportunidad (señal activa, cercanía al disparo, ventaja en 3 años) | `oportunidades` |
+| (nuevo) | Validación dura: 8 pruebas y veredicto 🟢 / 🟡 / 🔴 | `validar` |
 | (nuevo) | De backtest a realidad: las 6 fugas paso a paso (diferencial, deslizamiento, retraso, comisión, swap, exceso de operaciones) | `fugas` |
 | trader-budget | Unidades fraccionarias para un % de riesgo, enseñando la cuenta | `tamano` |
 | trader-risk | PASA / BLOQUEA con los límites del método | `riesgo` |
@@ -167,6 +168,27 @@ En Bitstamp, ATOM tenía el 100 % de velas planas, así que ATOM se lee de Yahoo
 
 En `fugas` con varios activos, cada uno lleva su marca del mundo real: 🟢 gana, ⚪ a la par,
 🔴 pierde, ⚠️ menos de 60 operaciones (pocos datos, no fiable todavía).
+
+## Validación dura: `validar`
+
+`validar` (por defecto BTC, ETH, SOL y DOGE) o `validar BTC ORO RUNE ...` pasa la regla, en el
+mundo real, por 8 pruebas y da un veredicto: 🟢 SÓLIDA, 🟡 FRÁGIL (gana pero falla alguna) o
+🔴 NO OPERAR (no gana en el mundo real).
+
+| # | Prueba | Qué exige para 🟢 |
+| --- | --- | --- |
+| 1 | Frente a comprar y mantener | Mejor Sharpe anual (rentabilidad ajustada al riesgo) |
+| 2 | Caída máxima y Sharpe | Caída máxima < 15 % con 1 % por operación |
+| 3 | Ajustes vecinos (ruptura 15/20/25 × stop 8/10/12, EMA 40/60) | Al menos 7 de 11 ganan: si solo vale el ajuste exacto, es casualidad |
+| 4 | Caminando hacia delante | Cada trimestre se usa el ajuste que mejor fue el año anterior; se compara con la regla fija (no decide el veredicto: dice si optimizar sirve) |
+| 5 | Costes dobles | Sigue ganando |
+| 6 | Tipo de mercado | Informa dónde gana y dónde pierde: tendencia tranquila (al alza o a la baja), lateral, nervioso (volatilidad en su 20 % más alto del año) o desplome (cae más de 2 desviaciones × √7 en 7 días) |
+| 7 | Señal de regla rota | Las últimas 30 operaciones reales no están por debajo del 5 % peor de lo esperable |
+| 8 | ¿Cómo puede fallar? | Lista de puntos débiles: sesgo de supervivencia, régimen que pierde, costes, ajuste, fuente de precios, rachas |
+
+Además: 100 operaciones o más y más de la mitad de los trimestres en positivo. El régimen se
+calcula con el día anterior, sin mirar el futuro. En `afondo` hay un filtro más, «régimen»: no
+operar con el mercado nervioso o en desplome (decidido de antemano, como los demás).
 
 ## Costes por activo
 
