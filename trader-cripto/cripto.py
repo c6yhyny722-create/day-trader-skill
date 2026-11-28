@@ -350,6 +350,35 @@ def sin_negociacion(velas):
     return ""
 
 
+VENTANA_PLANAS = 500
+
+
+def recortar_inicio_sin_negociacion(velas, ventana=VENTANA_PLANAS):
+    """Quita el tramo inicial de la historia en que el par apenas se negociaba (recién
+    listado). Devuelve las velas desde el primer tramo de `ventana` velas con menos del 20 %
+    de velas planas; si no hay ninguno, las devuelve todas (y `sin_negociacion` lo dirá)."""
+    if len(velas) <= ventana:
+        return velas
+    planas_acum = [0]
+    for b in velas:
+        planas_acum.append(planas_acum[-1] + (1 if b["h"] == b["l"] else 0))
+    for i in range(0, len(velas) - ventana + 1, 24):
+        if (planas_acum[i + ventana] - planas_acum[i]) / float(ventana) <= MAX_PLANAS:
+            return velas[i:]
+    return velas
+
+
+def preparar_historia(v1, v4):
+    """Historia útil: sin el tramo inicial sin negociación (también en 4h). Error si ni las
+    últimas velas se negocian."""
+    v1 = recortar_inicio_sin_negociacion(v1)
+    if sin_negociacion(v1[-VENTANA_PLANAS:]):
+        raise Error(sin_negociacion(v1[-VENTANA_PLANAS:]))
+    if v1:
+        v4 = [b for b in v4 if b["t"] >= v1[0]["t"] // H4 * H4 - N_EMA * 3 * H4]
+    return v1, v4
+
+
 def revisar_velas(velas, paso, ultimas, huecos=True):
     """Problemas en las `ultimas` velas: huecos de tiempo o velas imposibles (máximo por
     debajo del mínimo, apertura o cierre fuera del rango). Lista vacía si todo cuadra.
@@ -424,9 +453,9 @@ class _Mapa(dict):
     orden = ()
 
 
-def mapa_contexto(v4):
+def mapa_contexto(v4, n_ema=N_EMA):
     """{inicio de la vela de 4h: (cierre, EMA 50)} calculado una vez."""
-    es = ema([b["c"] for b in v4], N_EMA)
+    es = ema([b["c"] for b in v4], n_ema)
     m = _Mapa((b["t"], (b["c"], e)) for b, e in zip(v4, es))
     m.orden = sorted(m)
     return m
@@ -440,20 +469,21 @@ def contexto(v4, inicio_1h, mapa=None):
     return mapa[mapa.orden[i]] if i >= 0 else (None, None)
 
 
-def senal_en(v1, j, v4, mapa=None):
-    """Señal de la vela 1h j (cerrada) o None. Igual que evaluar() del script de Pine."""
-    if j < N_RUPTURA:
+def senal_en(v1, j, v4, mapa=None, n_ruptura=N_RUPTURA, n_stop=N_STOP):
+    """Señal de la vela 1h j (cerrada) o None. Igual que evaluar() del script de Pine.
+    `n_ruptura` y `n_stop` solo cambian en las pruebas de ajustes vecinos (`validar`)."""
+    if j < max(n_ruptura, n_stop):
         return None
     c4, e4 = contexto(v4, v1[j]["t"], mapa)
     if c4 is None or e4 is None:
         return None
     b = v1[j]
-    hh = max(x["h"] for x in v1[j - N_RUPTURA:j])
-    ll = min(x["l"] for x in v1[j - N_RUPTURA:j])
+    hh = max(x["h"] for x in v1[j - n_ruptura:j])
+    ll = min(x["l"] for x in v1[j - n_ruptura:j])
     if c4 > e4 and b["c"] > hh:
-        lado, nivel, stop = "COMPRA", hh, min(x["l"] for x in v1[j - N_STOP + 1:j + 1])
+        lado, nivel, stop = "COMPRA", hh, min(x["l"] for x in v1[j - n_stop + 1:j + 1])
     elif c4 < e4 and b["c"] < ll:
-        lado, nivel, stop = "VENTA", ll, max(x["h"] for x in v1[j - N_STOP + 1:j + 1])
+        lado, nivel, stop = "VENTA", ll, max(x["h"] for x in v1[j - n_stop + 1:j + 1])
     else:
         return None
     R = abs(b["c"] - stop)
@@ -695,10 +725,10 @@ def stop_variante(modo, s, v1, atrs):
     raise Error("variante de stop desconocida: %s" % modo)
 
 
-def senales(v1, v4, lado=None, solo_zona=True):
-    out, mapa = [], mapa_contexto(v4)
-    for j in range(N_RUPTURA, len(v1)):
-        s = senal_en(v1, j, v4, mapa)
+def senales(v1, v4, lado=None, solo_zona=True, n_ruptura=N_RUPTURA, n_stop=N_STOP, n_ema=N_EMA):
+    out, mapa = [], mapa_contexto(v4, n_ema)
+    for j in range(max(n_ruptura, n_stop), len(v1)):
+        s = senal_en(v1, j, v4, mapa, n_ruptura, n_stop)
         if s and (not lado or s["lado"] == lado) and (s["en_zona"] or not solo_zona):
             out.append(s)
     return out
@@ -916,6 +946,7 @@ FILTROS = [
     ("volumen", "volumen de la vela de la señal por encima de su media de 20"),
     ("diario", "a favor de la tendencia diaria (cierre del día anterior frente a su EMA 50)"),
     ("extremo", "no vender con RSI diario < 30 ni comprar con RSI diario > 70"),
+    ("regimen", "no operar con el mercado nervioso o en desplome (régimen del día anterior)"),
 ]
 
 
@@ -951,8 +982,9 @@ def datos_filtros(v1, moneda=None):
     for i in range(15, len(cs)):
         rs[i] = rsi(cs[max(0, i - 200):i + 1])
     dia = {b["t"]: (b["c"], e, r) for b, e, r in zip(d, e50, rs)}
+    reg = regimen_diario(v1, moneda)
     desfase = DESFASE_SESION if moneda and tipo_de(moneda) in ("metal", "divisa") else 0
-    return {"vmed": vmed, "dia": dia, "dias": sorted(dia), "desfase": desfase}
+    return {"vmed": vmed, "dia": dia, "dias": sorted(dia), "desfase": desfase, "reg": reg, "reg_dias": sorted(reg)}
 
 
 def pasa_filtro(nombre, s, v1, extra):
@@ -964,6 +996,9 @@ def pasa_filtro(nombre, s, v1, extra):
     if nombre == "volumen":
         m = extra["vmed"][s["j"]]
         return m is not None and v1[s["j"]]["v"] > m
+    if nombre == "regimen":
+        r = regimen_de(s["t"], extra.get("reg") or {}, extra.get("reg_dias") or [])
+        return r is not None and r not in ("NERVIOSO", "DESPLOME")
     hoy = (s["t"] + extra.get("desfase", 0)) // 86400 * 86400
     dias = extra.get("dias") or sorted(extra["dia"])
     i = bisect.bisect_left(dias, hoy) - 1
@@ -1446,8 +1481,10 @@ def cmd_afondo(a):
     fijar_precision(m)
     v1, v4 = cargar(m, a.offline, a.dias * 24)
     v1, v4 = cerradas(v1, H1, ahora), cerradas(v4, H4, ahora)
-    if sin_negociacion(v1):
-        raise Error("%s: %s" % (m, sin_negociacion(v1)))
+    try:
+        v1, v4 = preparar_historia(v1, v4)
+    except Error as e:
+        raise Error("%s: %s" % (m, e))
     r = estado_moneda(m, v1, v4, ahora)
     out = [informe([r]).rsplit("\n\nDatos:", 1)[0], ""]
     d = diarias_para(v1, m)
@@ -1612,8 +1649,7 @@ def cmd_fugas(a):
         try:
             v1, v4 = cargar(m, a.offline, a.dias * 24)
             v1, v4 = cerradas(v1, H1, ahora), cerradas(v4, H4, ahora)
-            if sin_negociacion(v1):
-                raise Error(sin_negociacion(v1))
+            v1, v4 = preparar_historia(v1, v4)
             f = fugas_de(m)
             for k in ("spread", "comision", "desliz", "swap"):
                 if getattr(a, k) is not None:
@@ -1676,6 +1712,320 @@ def cmd_fugas(a):
     out += ["  Cripto sin apalancamiento no paga swap; con apalancamiento o CFD, ponlo con --swap.",
             "  El retraso se mide entrando en la apertura de la vela siguiente a la señal; si ya está fuera de la "
             "zona de entrada, la operación no se hace.", ""]
+    for x in faltan:
+        out.append("Sin datos de " + x)
+    out += ["Un estudio del pasado no garantiza el futuro.", CIERRE]
+    print("\n".join(out))
+    return 0
+
+
+# ---------------------------------------------------------------- validación dura: las 8 pruebas
+
+VECINOS = [(n_r, n_s, N_EMA) for n_r in (15, 20, 25) for n_s in (8, 10, 12)] + [(N_RUPTURA, N_STOP, 40),
+                                                                              (N_RUPTURA, N_STOP, 60)]
+REGIMENES = ("TENDENCIA TRANQUILA", "LATERAL", "NERVIOSO", "DESPLOME")
+
+
+def ops_reales(v1, v4, moneda, f=None, horas=720, n_ruptura=N_RUPTURA, n_stop=N_STOP, n_ema=N_EMA):
+    """Operaciones en el mundo real (las 5 fugas de coste, retraso incluido)."""
+    lista = senales(v1, v4, n_ruptura=n_ruptura, n_stop=n_stop, n_ema=n_ema)
+    return operaciones_reales(v1, lista, horas, f or fugas_de(moneda), siguiente=True, moneda=moneda,
+                              spread_variable=True)
+
+
+def caida_maxima(Rs):
+    """Mayor caída de la curva acumulada (en R; con 1 % por operación, en % del capital)."""
+    pico = acum = peor = 0.0
+    for r in Rs:
+        acum += r
+        pico = max(pico, acum)
+        peor = max(peor, pico - acum)
+    return peor
+
+
+def sharpe(rets):
+    """Sharpe anual de rentabilidades mensuales (sin tipo libre de riesgo)."""
+    if len(rets) < 6:
+        return None
+    sd = statistics.pstdev(rets)
+    return statistics.mean(rets) / sd * math.sqrt(12) if sd > 0 else None
+
+
+def mes_de(ts):
+    m = a_madrid(ts)
+    return m.year * 12 + m.month - 1
+
+
+def mensual_ops(ops, desde, hasta):
+    """Resultado de cada mes en % del capital (1 % por operación), meses sin operaciones a 0."""
+    meses = {k: 0.0 for k in range(mes_de(desde), mes_de(hasta) + 1)}
+    for o in ops:
+        k = mes_de(o["salida_ts"])
+        if k in meses:
+            meses[k] += o["R"]
+    return [meses[k] for k in sorted(meses)]
+
+
+def comprar_y_mantener(v1, desde, hasta):
+    """Comprar al principio y no tocar: rentabilidad, caída máxima y Sharpe mensual."""
+    tramo = [b for b in v1 if desde <= b["t"] <= hasta]
+    if len(tramo) < 2:
+        return None
+    pico, peor, ultimo_mes, cierres_mes = tramo[0]["c"], 0.0, None, []
+    for b in tramo:
+        pico = max(pico, b["c"])
+        peor = max(peor, 1 - b["c"] / pico)
+        k = mes_de(b["t"])
+        if k != ultimo_mes:
+            cierres_mes.append(b["c"])
+            ultimo_mes = k
+        else:
+            cierres_mes[-1] = b["c"]
+    rets = [100 * (b / a - 1) for a, b in zip(cierres_mes, cierres_mes[1:])]
+    return {"rent_pct": 100 * (tramo[-1]["c"] / tramo[0]["c"] - 1), "caida_pct": 100 * peor, "sharpe": sharpe(rets)}
+
+
+def doble_coste(f):
+    return {k: 2 * v for k, v in f.items()}
+
+
+def trimestres(ops, desde, hasta):
+    """R total de cada trimestre (por fecha de salida)."""
+    q0, q1 = mes_de(desde) // 3, mes_de(hasta) // 3
+    por = {q: 0.0 for q in range(q0, q1 + 1)}
+    for o in ops:
+        q = mes_de(o["salida_ts"]) // 3
+        if q in por:
+            por[q] += o["R"]
+    return [por[q] for q in sorted(por)]
+
+
+def walk_forward(por_variante, base, desde, hasta, ventana=4):
+    """Prueba caminando hacia delante: cada trimestre se usa el ajuste vecino que mejor fue en
+    los `ventana` trimestres anteriores, y se compara con la regla fija. Si elegir el «mejor»
+    ajuste con el pasado no gana a la regla fija fuera de muestra, optimizar no sirve."""
+    q_var = {v: trimestres(ops, desde, hasta) for v, ops in por_variante.items()}
+    fija = q_var[base]
+    elegido, fija_fuera = [], []
+    for q in range(ventana, len(fija)):
+        mejor = max(q_var, key=lambda v: sum(q_var[v][q - ventana:q]))
+        elegido.append(q_var[mejor][q])
+        fija_fuera.append(fija[q])
+    return {"trimestres": len(fija), "positivos": sum(1 for x in fija if x > 0),
+            "fuera": len(fija_fuera), "fija_R": sum(fija_fuera), "optimizada_R": sum(elegido)}
+
+
+def regimen_diario(v1, moneda=None):
+    """{inicio del día: régimen} con datos hasta ese día (sin mirar el futuro). Reglas simples:
+    DESPLOME si en 7 días cae más de 2 desviaciones diarias × √7; NERVIOSO si la volatilidad de
+    20 días está en su 20 % más alto del último año; TENDENCIA TRANQUILA si el precio, la EMA 20
+    y la EMA 50 diarias están en orden y separadas al menos un 3 %; si no, LATERAL."""
+    d = diarias_para(v1, moneda)
+    cs = [b["c"] for b in d]
+    e20, e50 = ema(cs, 20), ema(cs, 50)
+    rets = [0.0] + [cs[i] / cs[i - 1] - 1 for i in range(1, len(cs))]
+    vols, out = [], {}
+    for i in range(len(cs)):
+        vol = statistics.pstdev(rets[max(1, i - 19):i + 1]) if i >= 20 else None
+        vols.append(vol)
+        if vol is None or e50[i] is None or i < 7:
+            continue
+        hist = [v for v in vols[max(0, i - 365):i] if v is not None]
+        pctl = sum(1 for v in hist if v < vol) / float(len(hist)) if hist else 0.5
+        ret7 = cs[i] / cs[i - 7] - 1
+        sep = abs(e20[i] - e50[i]) / e50[i]
+        if ret7 < -2 * vol * math.sqrt(7):
+            reg = "DESPLOME"
+        elif pctl >= 0.8:
+            reg = "NERVIOSO"
+        elif sep >= 0.03 and ((cs[i] > e20[i] > e50[i]) or (cs[i] < e20[i] < e50[i])):
+            reg = "TENDENCIA TRANQUILA"
+        else:
+            reg = "LATERAL"
+        out[d[i]["t"]] = reg
+    return out
+
+
+def regimen_de(ts, reg, dias):
+    """Régimen del último día cerrado antes de `ts`."""
+    i = bisect.bisect_left(dias, ts - 86400) - 1
+    return reg[dias[i]] if i >= 0 else None
+
+
+def por_regimen(ops, reg):
+    dias = sorted(reg)
+    grupos = {r: [] for r in REGIMENES}
+    for o in ops:
+        r = regimen_de(o["entrada_ts"], reg, dias)
+        if r:
+            grupos[r].append(o)
+    tiempo = {r: sum(1 for x in reg.values() if x == r) / float(len(reg) or 1) for r in REGIMENES}
+    return {r: dict(resumen(g), tiempo=tiempo[r]) for r, g in grupos.items()}
+
+
+def umbral_regla_rota(Rs, n=30, recorridos=3000, semilla=7):
+    """Lo que la regla suele hacer en `n` operaciones: si las últimas `n` reales suman menos que
+    el 5 % peor de los recorridos al azar, la regla se comporta peor de lo esperado (avisar)."""
+    if len(Rs) < n:
+        return None
+    rng = random.Random(semilla)
+    sumas = sorted(sum(rng.choice(Rs) for _ in range(n)) for _ in range(recorridos))
+    caidas = sorted(caida_maxima([rng.choice(Rs) for _ in range(100)]) for _ in range(1000))
+    return {"n": n, "p5": sumas[int(0.05 * recorridos)], "ultimas": sum(Rs[-n:]),
+            "caida_p95": caidas[int(0.95 * len(caidas))]}
+
+
+def validar_activo(m, v1, v4, horas=720):
+    f = fugas_de(m)
+    base = (N_RUPTURA, N_STOP, N_EMA)
+    por_var = {v: ops_reales(v1, v4, m, f, horas, *v) for v in VECINOS}
+    ops = por_var[base]
+    if not ops:
+        raise Error("%s: sin operaciones en la historia" % m)
+    desde, hasta = v1[0]["t"], v1[-1]["t"]
+    Rs = [o["R"] for o in sorted(ops, key=lambda o: o["salida_ts"])]
+    real = resumen(ops)
+    x2 = resumen(ops_reales(v1, v4, m, doble_coste(f), horas))
+    vecinos = {v: resumen(o).get("R_medio") for v, o in por_var.items()}
+    pos_vec = sum(1 for v, r in vecinos.items() if r is not None and r > 0)
+    wf = walk_forward(por_var, base, desde, hasta)
+    meses = mensual_ops(ops, desde, hasta)
+    bh = comprar_y_mantener(v1, desde, hasta)
+    reg = por_regimen(ops, regimen_diario(v1, m))
+    rr = umbral_regla_rota(Rs)
+    res = {"moneda": m, "real": real, "x2": x2, "vecinos": vecinos, "pos_vecinos": pos_vec, "wf": wf,
+           "caida_R": caida_maxima(Rs), "sharpe": sharpe(meses), "rent_pct": sum(Rs), "bh": bh, "regimen": reg,
+           "regla_rota": rr, "desde": desde, "hasta": hasta}
+    ahora_reg = regimen_diario(v1, m)
+    res["regimen_ahora"] = None
+    if ahora_reg:
+        rg = ahora_reg[max(ahora_reg)]
+        d = diarias_para(v1, m)
+        cs = [b["c"] for b in d]
+        sube = cs[-1] > ema(cs, 50)[-1] if len(cs) >= 50 else None
+        res["regimen_ahora"] = rg + ("" if sube is None or rg in ("NERVIOSO", "DESPLOME") else
+                                     " (al alza)" if sube else " (a la baja)")
+    res["veredicto"], res["fallos"] = veredicto_validacion(res)
+    return res
+
+
+def veredicto_validacion(r):
+    fallos = []
+    real, x2, wf, bh = r["real"], r["x2"], r["wf"], r["bh"]
+    if not real.get("n") or real["R_medio"] <= 0.0:
+        return "🔴 NO OPERAR", ["en el mundo real no gana"]
+    if real["R_medio"] <= 0.02:
+        fallos.append("en el mundo real gana muy poco")
+    if not x2.get("n") or x2["R_medio"] <= 0:
+        fallos.append("con el doble de costes deja de ganar")
+    if r["pos_vecinos"] < 7:
+        fallos.append("depende del ajuste exacto: solo %d de %d ajustes vecinos ganan" % (r["pos_vecinos"], len(VECINOS)))
+    if wf["trimestres"] and wf["positivos"] / float(wf["trimestres"]) < 0.55:
+        fallos.append("gana en pocos trimestres (%d de %d)" % (wf["positivos"], wf["trimestres"]))
+    if bh and bh.get("sharpe") is not None and (r["sharpe"] or 0) <= bh["sharpe"]:
+        fallos.append("comprar y mantener ha sido mejor en rentabilidad ajustada al riesgo")
+    if real["n"] < 100:
+        fallos.append("pocas operaciones (%d)" % real["n"])
+    if r["caida_R"] > 15:
+        fallos.append("caída máxima del %s con 1 %% por operación (tope 15 %%)" % pct(r["caida_R"], 0))
+    rr = r["regla_rota"]
+    if rr and rr["ultimas"] < rr["p5"]:
+        fallos.append("REGLA ROTA: las últimas %d operaciones van peor que el 95 %% de lo esperado" % rr["n"])
+    return ("🟢 SÓLIDA" if not fallos else "🟡 FRÁGIL"), fallos
+
+
+def como_falla(r):
+    """Puntos débiles, para el apartado «¿Cómo puede fallar?»."""
+    out = ["Sesgo de supervivencia: solo se estudian activos que siguen existiendo hoy; los que se hundieron "
+           "no están, así que el pasado parece algo mejor de lo que fue."]
+    peor = min(((k, v) for k, v in r["regimen"].items() if v.get("n", 0) >= 15), key=lambda kv: kv[1]["R_medio"],
+               default=None)
+    if peor and peor[1]["R_medio"] < 0:
+        out.append("Pierde en mercado %s (%s R por operación, %s del tiempo): si el mercado pasa a ese estado, "
+                   "la ventaja desaparece." % (peor[0].lower(), fmt(peor[1]["R_medio"], 2), pct(100 * peor[1]["tiempo"], 0)))
+    if not r["x2"].get("n") or r["x2"]["R_medio"] <= 0:
+        out.append("Muy sensible a los costes: con el doble de diferencial y deslizamiento deja de ganar.")
+    if r["pos_vecinos"] < 7:
+        out.append("Frágil al ajuste: cambiar un poco las velas de ruptura, stop o media la hace perder.")
+    if r["wf"]["fuera"] and r["wf"]["optimizada_R"] < r["wf"]["fija_R"]:
+        out.append("Optimizar con el pasado no ayuda: el «mejor ajuste» elegido cada trimestre lo hizo peor que la "
+                   "regla fija. Mantener la regla fija es lo correcto.")
+    if tipo_de(r["moneda"]) == "cripto" and not es_materia(r["moneda"]):
+        out.append("Precio de referencia: Bitstamp. Quantfury usa Binance o Coinbase; en momentos bruscos puede diferir.")
+    if r["caida_R"] > 15:
+        out.append("Racha mala larga: la caída máxima pasó del 15 %% con 1 %% por operación (%s)." % pct(r["caida_R"], 0))
+    return out
+
+
+def informe_validacion(r):
+    rm = lambda x: fmt(x["R_medio"], 2) if x.get("n") else "-"
+    bh = r["bh"] or {}
+    fecha = lambda t: a_madrid(t).strftime("%d/%m/%Y")
+    out = ["## %s · %s" % (r["moneda"], r["veredicto"]),
+           "%s a %s · régimen de mercado ahora: %s" % (fecha(r["desde"]), fecha(r["hasta"]), (r["regimen_ahora"] or "sin dato").lower()),
+           "", "| Prueba | Resultado |", "|---|---|",
+           "| Mundo real (5 fugas) | %s R · %d operaciones · %s aciertos |" % (rm(r["real"]), r["real"].get("n", 0),
+                                                                          pct(r["real"].get("acierto", 0), 0)),
+           "| Con el doble de costes | %s R |" % rm(r["x2"]),
+           "| Ajustes vecinos que ganan | %d de %d |" % (r["pos_vecinos"], len(VECINOS)),
+           "| Trimestres que ganan | %d de %d |" % (r["wf"]["positivos"], r["wf"]["trimestres"]),
+           "| Caminando hacia delante (%d trimestres) | regla fija %s R · ajuste «optimizado» %s R |" % (
+               r["wf"]["fuera"], fmt(r["wf"]["fija_R"], 1), fmt(r["wf"]["optimizada_R"], 1)),
+           "| Caída máxima (1 %% por operación) | %s |" % pct(r["caida_R"], 1),
+           "| Sharpe anual: regla / comprar y mantener | %s / %s |" % (
+               fmt(r["sharpe"], 2) if r["sharpe"] is not None else "-",
+               fmt(bh.get("sharpe"), 2) if bh.get("sharpe") is not None else "-"),
+           "| Comprar y mantener en el periodo | %s (caída máxima %s) |" % (
+               pct(bh.get("rent_pct", 0), 0), pct(bh.get("caida_pct", 0), 0)),
+           "| Regla con 1 %% por operación en el periodo | %s |" % pct(r["rent_pct"], 0)]
+    rr = r["regla_rota"]
+    if rr:
+        out.append("| Señal de regla rota | últimas %d: %s R · umbral %s R · caída máx. esperable %s R |" % (
+            rr["n"], fmt(rr["ultimas"], 1), fmt(rr["p5"], 1), fmt(rr["caida_p95"], 1)))
+    out += ["", "Por tipo de mercado (régimen del día anterior a la entrada):",
+            "| Régimen | Tiempo | Operaciones | R medio |", "|---|---|---|---|"]
+    for k in REGIMENES:
+        x = r["regimen"][k]
+        out.append("| %s | %s | %d | %s |" % (k.capitalize(), pct(100 * x["tiempo"], 0), x.get("n", 0), rm(x)))
+    if r["fallos"]:
+        out += ["", "Por qué no es 🟢: " + "; ".join(r["fallos"]) + "."]
+    out += ["", "¿Cómo puede fallar?"] + ["- " + x for x in como_falla(r)]
+    return out
+
+
+def cmd_validar(a):
+    ahora = parse_ahora(a.ahora)
+    res, faltan = [], []
+    for m in _monedas(a.monedas or ["BTC", "ETH", "SOL", "DOGE"]):
+        fijar_precision(m)
+        try:
+            v1, v4 = cargar(m, a.offline, a.dias * 24)
+            v1, v4 = preparar_historia(cerradas(v1, H1, ahora), cerradas(v4, H4, ahora))
+            res.append(validar_activo(m, v1, v4, a.horas))
+        except Error as e:
+            faltan.append("%s (%s)" % (m, e))
+    fijar_precision(None)
+    if not res:
+        raise Error("no hay datos de ninguna moneda")
+    out = ["Validación dura de la regla «ruptura 20 + contexto 4h» (mundo real, con las fugas)", "",
+           "| Activo | Veredicto | R real | ×2 costes | Vecinos | Trimestres | Caída máx. | Sharpe regla/B&H | Últimas 30 |",
+           "|---|---|---|---|---|---|---|---|---|"]
+    for r in sorted(res, key=lambda r: -(r["real"].get("R_medio") or -9)):
+        rr, bh = r["regla_rota"], r["bh"] or {}
+        out.append("| %s | %s | %s | %s | %d/%d | %d/%d | %s | %s / %s | %s |" % (
+            r["moneda"], r["veredicto"], fmt(r["real"].get("R_medio", 0), 2),
+            fmt(r["x2"].get("R_medio", 0), 2) if r["x2"].get("n") else "-", r["pos_vecinos"], len(VECINOS),
+            r["wf"]["positivos"], r["wf"]["trimestres"], pct(r["caida_R"], 0),
+            fmt(r["sharpe"], 2) if r["sharpe"] is not None else "-",
+            fmt(bh.get("sharpe"), 2) if bh.get("sharpe") is not None else "-",
+            ("⚠️ " if rr and rr["ultimas"] < rr["p5"] else "") + (fmt(rr["ultimas"], 1) + " R" if rr else "-")))
+    out += ["", "🟢 SÓLIDA: gana en el mundo real, aguanta el doble de costes, 7 o más ajustes vecinos ganan, gana en más "
+            "de la mitad de los trimestres, mejor Sharpe que comprar y mantener, 100+ operaciones, caída < 15 % y sin "
+            "señal de regla rota. 🟡 FRÁGIL: gana pero falla alguna. 🔴 NO OPERAR: no gana en el mundo real.", ""]
+    for r in res:
+        fijar_precision(r["moneda"])
+        out += informe_validacion(r) + [""]
+    fijar_precision(None)
     for x in faltan:
         out.append("Sin datos de " + x)
     out += ["Un estudio del pasado no garantiza el futuro.", CIERRE]
@@ -1858,6 +2208,13 @@ def main(argv=None):
     s.add_argument("--tope-diario", type=float, default=2.0, help="%% de pérdida diaria máxima (con 1 %% por operación)")
     comun(s)
     s.set_defaults(fn=cmd_fugas)
+
+    s = sub.add_parser("validar", help="las 8 pruebas duras: costes ×2, vecinos, trimestres, caída, Sharpe, régimen...")
+    s.add_argument("monedas", nargs="*")
+    s.add_argument("--dias", type=int, default=1095)
+    s.add_argument("--horas", type=int, default=720)
+    comun(s)
+    s.set_defaults(fn=cmd_validar)
 
     s = sub.add_parser("tamano", help="unidades para un % de riesgo")
     s.add_argument("--capital", type=float, required=True)

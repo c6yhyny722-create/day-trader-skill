@@ -568,6 +568,23 @@ class Fugas(unittest.TestCase):
         self.assertEqual(cr.tipo_de("ATOM"), "cripto")
         self.assertEqual(cr.MATERIAS["ATOM"]["yahoo"], "ATOM-USD")
 
+    def test_recorta_el_inicio_sin_negociacion(self):
+        v1 = velas_1h(1500)
+        for b in v1[:600]:                     # recién listado: 600 velas planas al principio
+            b["o"] = b["h"] = b["l"] = b["c"] = 100.0
+        util = cr.recortar_inicio_sin_negociacion(v1)
+        self.assertLess(len(util), len(v1))
+        self.assertLessEqual(cr.planas(util), cr.MAX_PLANAS)
+        v1b, v4b = cr.preparar_historia(v1, a_4h(v1))
+        self.assertEqual(v1b[0]["t"], util[0]["t"])
+
+    def test_sin_negociacion_ahora_es_error(self):
+        v1 = velas_1h(1500)
+        for b in v1[-600:]:
+            b["o"] = b["h"] = b["l"] = b["c"] = 100.0
+        with self.assertRaises(cr.Error):
+            cr.preparar_historia(v1, a_4h(v1))
+
     def test_fugas_por_activo(self):
         self.assertEqual(cr.fugas_de("BTC")["swap"], 0.0)
         self.assertGreater(cr.fugas_de("ORO")["swap"], 0)
@@ -621,6 +638,89 @@ class ListaDeSeguimiento(unittest.TestCase):
         lunes = v1[-1]["t"] + 64 * H1                     # de viernes por la tarde al lunes
         r = cr.estado_moneda("AAPL", v1, cr.agrupar_4h(v1), lunes)
         self.assertNotEqual(r["ahora"], "NO EVALUABLE", r.get("motivo"))
+
+
+class ValidacionDura(unittest.TestCase):
+    def test_caida_maxima(self):
+        self.assertEqual(cr.caida_maxima([1, 1, -1, -2, 3]), 3)
+        self.assertEqual(cr.caida_maxima([1, 2, 3]), 0)
+
+    def test_sharpe(self):
+        self.assertIsNone(cr.sharpe([1, 2]))
+        self.assertIsNone(cr.sharpe([1.0] * 12))                     # sin variación
+        self.assertGreater(cr.sharpe([1, 2, 1, 2, 1, 2, 1, 2]), 0)
+
+    def test_comprar_y_mantener(self):
+        v1 = velas_1h(24 * 70, pendiente=0.05)
+        bh = cr.comprar_y_mantener(v1, v1[0]["t"], v1[-1]["t"])
+        self.assertGreater(bh["rent_pct"], 0)
+        self.assertGreaterEqual(bh["caida_pct"], 0)
+
+    def test_vecinos_incluyen_la_regla(self):
+        self.assertIn((cr.N_RUPTURA, cr.N_STOP, cr.N_EMA), cr.VECINOS)
+        self.assertEqual(len(cr.VECINOS), 11)
+
+    def test_doble_coste(self):
+        self.assertEqual(cr.doble_coste({"spread": 0.1, "swap": 0.0}), {"spread": 0.2, "swap": 0.0})
+
+    def test_walk_forward_elige_con_el_pasado(self):
+        base = (20, 10, 50)
+        t0 = cr.parse_ahora("2025-01-15 10:00")
+        def ops(rs):   # una operación a mitad de cada trimestre
+            return [{"salida_ts": t0 + q * 91 * 86400, "R": r} for q, r in enumerate(rs)]
+        por = {base: ops([1, 1, 1, 1, 1, 1]), (15, 8, 50): ops([2, 2, 2, 2, -5, -5])}
+        wf = cr.walk_forward(por, base, t0, t0 + 5 * 91 * 86400)
+        self.assertEqual(wf["fuera"], 2)
+        self.assertEqual(wf["fija_R"], 2)
+        self.assertEqual(wf["optimizada_R"], -4)               # -5 (eligió la otra) + 1 (vuelve a la fija)
+
+    def test_regimen_diario_tendencia_y_desplome(self):
+        sube = velas_1h(24 * 120, pendiente=0.05)
+        reg = cr.regimen_diario(sube)
+        self.assertEqual(reg[max(reg)], "TENDENCIA TRANQUILA")
+        cae = velas_1h(24 * 120, pendiente=0.0)
+        for i, b in enumerate(cae[-24 * 5:]):                 # caída fuerte en los últimos 5 días
+            c = 100 - (i + 1) * 0.3
+            b["o"], b["c"], b["h"], b["l"] = c + 0.3, c, c + 0.35, c - 0.05
+        reg = cr.regimen_diario(cae)
+        self.assertIn(reg[max(reg)], ("DESPLOME", "NERVIOSO"))
+
+    def test_umbral_regla_rota(self):
+        Rs = [2, -1, -1] * 20
+        u = cr.umbral_regla_rota(Rs)
+        self.assertLess(u["p5"], 0 + 2 * 30)
+        self.assertEqual(u["ultimas"], sum(Rs[-30:]))
+        self.assertIsNone(cr.umbral_regla_rota([1] * 10))
+
+    def test_veredicto(self):
+        bueno = {"real": {"n": 200, "R_medio": 0.12}, "x2": {"n": 200, "R_medio": 0.06}, "pos_vecinos": 11,
+                 "wf": {"trimestres": 12, "positivos": 9}, "bh": {"sharpe": 0.5}, "sharpe": 0.9, "caida_R": 10,
+                 "regla_rota": {"n": 30, "ultimas": 0, "p5": -8}}
+        self.assertEqual(cr.veredicto_validacion(bueno)[0], "🟢 SÓLIDA")
+        fragil = dict(bueno, pos_vecinos=4)
+        v, fallos = cr.veredicto_validacion(fragil)
+        self.assertEqual(v, "🟡 FRÁGIL")
+        self.assertTrue(any("ajuste exacto" in f for f in fallos))
+        rota = dict(bueno, regla_rota={"n": 30, "ultimas": -12, "p5": -8})
+        self.assertTrue(any("REGLA ROTA" in f for f in cr.veredicto_validacion(rota)[1]))
+        malo = dict(bueno, real={"n": 200, "R_medio": -0.1})
+        self.assertEqual(cr.veredicto_validacion(malo)[0], "🔴 NO OPERAR")
+
+    def test_filtro_de_regimen(self):
+        extra = {"reg": {86400 * 20000: "NERVIOSO", 86400 * 20001: "LATERAL"}}
+        extra["reg_dias"] = sorted(extra["reg"])
+        s = {"lado": "COMPRA", "j": 0, "t": 86400 * 20002 + 3600, "cierre_ts": 0}
+        self.assertTrue(cr.pasa_filtro("regimen", s, [], extra))       # día anterior: lateral
+        s["t"] = 86400 * 20001 + 3600
+        self.assertFalse(cr.pasa_filtro("regimen", s, [], extra))      # día anterior: nervioso
+
+    def test_senal_con_ajustes_vecinos(self):
+        v1 = velas_1h(300, salto=1.0)
+        v4 = a_4h(v1)
+        base = cr.senal_en(v1, len(v1) - 1, v4)
+        otra = cr.senal_en(v1, len(v1) - 1, v4, None, 25, 12)
+        self.assertEqual(base["lado"], otra["lado"])
+        self.assertLessEqual(otra["stop"], base["stop"])            # 12 velas de stop: mínimo más bajo o igual
 
 
 class FichasYNoticias(unittest.TestCase):
