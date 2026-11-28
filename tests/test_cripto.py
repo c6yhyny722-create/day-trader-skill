@@ -805,7 +805,7 @@ class FichasYNoticias(unittest.TestCase):
         self.assertNotIn("SOLO INFORMACIÓN", f)
 
     def test_ficha_de_moneda_solo_informacion(self):
-        self.assertEqual(sorted(cr.SOLO_INFORMACION), ["HYPE", "LINK", "XRP", "ZEC"])
+        self.assertEqual(sorted(cr.SOLO_INFORMACION), ["ADA", "HYPE", "LINK", "XRP", "ZEC"])
         f = cr.ficha(1, "LINK", "COMPRA", 9.694, "1h", "Cierre por encima", cr.parse_ahora("2026-11-28 20:00"))
         self.assertIn("FICHA 1 – PROPUESTA – ℹ️ SOLO INFORMACIÓN (no operar) · 🟢 COMPRA", f)
         self.assertIn('Texto:       "ℹ️ SOLO INFORMACIÓN (no operar) · 🟢 COMPRA LINK', f)
