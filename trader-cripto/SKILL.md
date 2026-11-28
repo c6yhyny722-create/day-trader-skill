@@ -36,7 +36,7 @@ para confirmar, horas de Madrid**. Es para estudio e investigación con capital 
 | (nuevo) | Compara stops y objetivos en dos periodos, con costes | `estudiar` |
 | (nuevo) | Estudio a fondo de una moneda con 3 años: diario, niveles, horas, regla y filtros | `afondo MONEDA` |
 | (nuevo) | Las 10 monedas ordenadas por oportunidad (señal activa, cercanía al disparo, ventaja en 3 años) | `oportunidades` |
-| (nuevo) | Validación dura: 8 pruebas y veredicto 🟢 / 🟡 / 🔴 | `validar` |
+| (nuevo) | Validación dura: 10 pruebas y veredicto 🟢 / 🟡 / 🔴 | `validar` |
 | (nuevo) | De backtest a realidad: las 6 fugas paso a paso (diferencial, deslizamiento, retraso, comisión, swap, exceso de operaciones) | `fugas` |
 | trader-budget | Unidades fraccionarias para un % de riesgo, enseñando la cuenta | `tamano` |
 | trader-risk | PASA / BLOQUEA con los límites del método | `riesgo` |
@@ -172,7 +172,7 @@ En `fugas` con varios activos, cada uno lleva su marca del mundo real: 🟢 gana
 ## Validación dura: `validar`
 
 `validar` (por defecto BTC, ETH, SOL y DOGE) o `validar BTC ORO RUNE ...` pasa la regla, en el
-mundo real, por 8 pruebas y da un veredicto: 🟢 SÓLIDA, 🟡 FRÁGIL (gana pero falla alguna) o
+mundo real, por 10 pruebas y da un veredicto: 🟢 SÓLIDA, 🟡 FRÁGIL (gana pero falla alguna) o
 🔴 NO OPERAR (no gana en el mundo real).
 
 | # | Prueba | Qué exige para 🟢 |
@@ -185,6 +185,16 @@ mundo real, por 8 pruebas y da un veredicto: 🟢 SÓLIDA, 🟡 FRÁGIL (gana pe
 | 6 | Tipo de mercado | Informa dónde gana y dónde pierde: tendencia tranquila (al alza o a la baja), lateral, nervioso (volatilidad en su 20 % más alto del año) o desplome (cae más de 2 desviaciones × √7 en 7 días) |
 | 7 | Señal de regla rota | Las últimas 30 operaciones reales no están por debajo del 5 % peor de lo esperable |
 | 8 | ¿Cómo puede fallar? | Lista de puntos débiles: sesgo de supervivencia, régimen que pierde, costes, ajuste, fuente de precios, rachas |
+| 9 | Margen de error (95 %) | El R medio, remuestreando las operaciones 2.000 veces, sigue por encima de 0: si el margen cruza el 0, la ganancia puede ser suerte |
+| 10 | Contra entrar al azar | Por cada señal, una entrada en una vela al azar con la misma dirección, el mismo riesgo en %, la misma zona y 2R, en el mismo mundo real; 100 veces. La regla debe superar al 90 % de esas pruebas: si no, el momento de la ruptura no aporta nada |
+
+Con dos o más activos que ganan, `validar` da también el margen de error de **todos juntos**:
+una sola moneda tiene pocas operaciones para descartar la suerte, varias juntas sí.
+
+Las pruebas 9 y 10 vienen del repositorio original (Jakeschincariol/day-trader-skill, PR 53):
+en 496 acciones del S&P 500 la ruptura de apertura perdía −0,125 R y no mejoraba a una
+entrada a ciegas a la misma hora. Comprobado aquí el 28/11/2026: en BTC, ETH, SOL y DOGE la
+regla supera al 91-100 % de las entradas al azar, y juntas su margen es de +0,05 a +0,24 R.
 
 Además: 100 operaciones o más y más de la mitad de los trimestres en positivo. El régimen se
 calcula con el día anterior, sin mirar el futuro. En `afondo` hay un filtro más, «régimen»: no
