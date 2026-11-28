@@ -135,10 +135,15 @@ class Regla(unittest.TestCase):
         c = (s["zona"][0] + s["zona"][1]) / 2           # el precio se queda dentro de la zona
         for k in range(1, 4):
             v1.append({"t": v1[-1]["t"] + H1, "o": c, "h": c + 0.01, "l": c - 0.01, "c": c, "v": 1.0})
-        r = cr.estado_moneda("LINK", v1, a_4h(v1), v1[-1]["t"] + H1 + 60)
+        r = cr.estado_moneda("SOL", v1, a_4h(v1), v1[-1]["t"] + H1 + 60)
         self.assertTrue(r["ahora"].startswith("COMPRA en zona (señal de las"), r["ahora"])
         o = cr.oportunidad(dict(r, atr=1.0), None)
         self.assertEqual(o["orden"][0], 0)                # cuenta como activa en el ranking
+        # la misma señal en una moneda marcada solo información va al final del ranking
+        r = cr.estado_moneda("LINK", v1, a_4h(v1), v1[-1]["t"] + H1 + 60)
+        self.assertEqual(cr.oportunidad(dict(r, atr=1.0), None)["orden"][0], 2.5)
+        self.assertIn("ℹ️ solo información", cr.linea_tabla(r))
+        self.assertIn("no operar sus señales", cr.informe([r]))
 
     def test_sin_datos_no_evaluable(self):
         r = cr.estado_moneda("LINK", velas_1h(10), [], T0 + 10 * H1)
@@ -790,13 +795,22 @@ class Panel(unittest.TestCase):
 
 class FichasYNoticias(unittest.TestCase):
     def test_ficha_con_los_ocho_campos(self):
-        f = cr.ficha(1, "LINK", "COMPRA", 9.694, "1h", "Cierre por encima", cr.parse_ahora("2026-11-28 20:00"))
-        for campo in ("Símbolo:     BITSTAMP:LINKUSD", "Operación:   🟢 COMPRA (abrir largo)", "Nivel:       9,694",
+        f = cr.ficha(1, "SOL", "COMPRA", 9.694, "1h", "Cierre por encima", cr.parse_ahora("2026-11-28 20:00"))
+        for campo in ("Símbolo:     BITSTAMP:SOLUSD", "Operación:   🟢 COMPRA (abrir largo)", "Nivel:       9,694",
                       "Marco:       1h", "Condición:   Cierre por encima", "Tipo:        Una vez por cierre de barra",
-                      "Caducidad:   28/11 20:00 (Madrid)", 'Texto:       "🟢 COMPRA LINK'):
+                      "Caducidad:   28/11 20:00 (Madrid)", 'Texto:       "🟢 COMPRA SOL'):
             self.assertIn(campo, f)
         self.assertTrue(f.startswith("FICHA 1"))
         self.assertNotIn("\u2014", f)
+        self.assertNotIn("SOLO INFORMACIÓN", f)
+
+    def test_ficha_de_moneda_solo_informacion(self):
+        self.assertEqual(sorted(cr.SOLO_INFORMACION), ["HYPE", "LINK", "XRP", "ZEC"])
+        f = cr.ficha(1, "LINK", "COMPRA", 9.694, "1h", "Cierre por encima", cr.parse_ahora("2026-11-28 20:00"))
+        self.assertIn("FICHA 1 – PROPUESTA – ℹ️ SOLO INFORMACIÓN (no operar) · 🟢 COMPRA", f)
+        self.assertIn('Texto:       "ℹ️ SOLO INFORMACIÓN (no operar) · 🟢 COMPRA LINK', f)
+        espera = cr.ficha(2, "LINK", "ESPERAR", 9.5, "4h", "Cierre por debajo", cr.parse_ahora("2026-11-28 20:00"))
+        self.assertNotIn("SOLO INFORMACIÓN", espera)        # un aviso de ESPERAR no abre nada
 
     def test_ficha_de_venta(self):
         f = cr.ficha(2, "BTC", "VENTA", 58719, "1h", "Cierre por debajo", cr.parse_ahora("2026-11-28 20:00"))
@@ -910,6 +924,14 @@ class Diario(unittest.TestCase):
         with open(ruta_csv, encoding="utf-8") as fh:
             texto = fh.read()
         self.assertIn(";no;noticia;", texto)
+
+    def test_moneda_solo_informacion_va_fuera_de_la_regla(self):
+        rc, out = self.run_cli("abrir", "XRP", "--lado", "COMPRA", "--entrada", "2", "--stop", "1.9")
+        self.assertIn("solo información", out)
+        with open(self.ruta, encoding="utf-8") as fh:
+            op = json.load(fh)["operaciones"][0]
+        self.assertFalse(op["regla"])
+        self.assertIn("solo-informacion", op["etiquetas"])
 
     def test_wilson(self):
         bajo, alto = cr.wilson(10, 20)

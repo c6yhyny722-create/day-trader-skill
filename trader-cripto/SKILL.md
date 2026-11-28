@@ -174,6 +174,21 @@ En Bitstamp, ATOM tenía el 100 % de velas planas, así que ATOM se lee de Yahoo
 En `fugas` con varios activos, cada uno lleva su marca del mundo real: 🟢 gana, ⚪ a la par,
 🔴 pierde, ⚠️ menos de 60 operaciones (pocos datos, no fiable todavía).
 
+## Monedas marcadas «ℹ️ solo información»
+
+**LINK, XRP, ZEC y HYPE** están marcadas por el usuario (28/11/2026) como solo información,
+tras salir 🔴 NO OPERAR en la validación de los 33 activos
+(`backtests/validacion-33-activos-2026-11-28/`). La lista está en `SOLO_INFORMACION` en
+`cripto.py` y solo se cambia si el usuario lo pide.
+
+- Se siguen analizando: tabla, contexto, señales y noticias, con la marca `ℹ️ solo información`.
+- En `oportunidades` van al final, detrás de las que no han ganado.
+- Sus fichas de COMPRA o VENTA dicen «ℹ️ SOLO INFORMACIÓN (no operar)» en la cabecera y en el texto.
+- En el informe diario cuentan como 🔴 sea cual sea su marca de `fugas`: nunca son la «mejor
+  opción» y sus señales salen en una sola línea, como información. LINK sigue teniendo su
+  apartado fijo, con la marca delante.
+- En `diario abrir` se anotan como fuera de la regla, con la etiqueta `solo-informacion`.
+
 ## Validación dura: `validar`
 
 `validar` (por defecto BTC, ETH, SOL y DOGE) o `validar BTC ORO RUNE ...` pasa la regla, en el
